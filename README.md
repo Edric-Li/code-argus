@@ -78,6 +78,12 @@ src/
 # 运行 CLI（需要提供参数）
 npm run dev <repoPath> <sourceBranch> <targetBranch>
 
+# 代码质量
+npm run lint              # 运行 ESLint 检查
+npm run lint:fix          # 自动修复 ESLint 问题
+npm run format            # 格式化代码（Prettier）
+npm run format:check      # 检查代码格式
+
 # 类型检查
 npm run type-check
 
@@ -86,6 +92,53 @@ npm run build
 
 # 运行编译后的代码
 npm start
+```
+
+## 代码质量工具
+
+项目配置了完整的代码质量保证工具链：
+
+### ESLint
+
+- **配置文件**: `eslint.config.mjs`
+- **功能**: TypeScript 代码检查
+- **规则**: 基于 `@typescript-eslint/recommended`
+- **使用**: `npm run lint` 或 `npm run lint:fix`
+
+### Prettier
+
+- **配置文件**: `.prettierrc.json`
+- **功能**: 代码格式化
+- **风格**: 单引号、分号、100 字符宽度
+- **使用**: `npm run format` 或 `npm run format:check`
+
+### Husky + lint-staged
+
+- **Git Hooks**: 在提交前自动运行代码检查
+- **pre-commit**: 自动格式化和修复暂存的文件
+- **commit-msg**: 检查 commit message 格式
+
+### Commitlint
+
+- **配置文件**: `commitlint.config.mjs`
+- **规范**: Conventional Commits
+- **格式**: `<type>: <subject>`
+- **类型**:
+  - `feat`: 新功能
+  - `fix`: 修复 bug
+  - `docs`: 文档变更
+  - `style`: 代码格式
+  - `refactor`: 重构
+  - `perf`: 性能优化
+  - `test`: 测试
+  - `chore`: 构建/工具变动
+
+**Commit 示例**:
+
+```bash
+git commit -m "feat: add diff parser with intelligent categorization"
+git commit -m "fix: correct remote branch handling in getDiff"
+git commit -m "docs: update README with usage examples"
 ```
 
 ## 工作原理
