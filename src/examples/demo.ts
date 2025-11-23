@@ -8,7 +8,7 @@ function demo() {
 
   const data = {
     timestamp: new Date().toISOString(),
-    message: 'Hello from Code Argus!'
+    message: 'Hello from Code Argus!',
   };
 
   console.log(data);

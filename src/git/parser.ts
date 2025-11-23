@@ -6,11 +6,11 @@
  * File category for intelligent processing
  */
 export type FileCategory =
-  | 'source'     // Source code (ts, js, css, etc.) - High priority Review
-  | 'config'     // Critical config (package.json, tsconfig.json) - High priority Review
-  | 'data'       // Generic data (*.json, *.yml) - Only check format
-  | 'asset'      // Static assets (images, fonts) - Only check filename changes, ignore content
-  | 'lock'       // Lock files (package-lock.json) - Ignore content, just note change
+  | 'source' // Source code (ts, js, css, etc.) - High priority Review
+  | 'config' // Critical config (package.json, tsconfig.json) - High priority Review
+  | 'data' // Generic data (*.json, *.yml) - Only check format
+  | 'asset' // Static assets (images, fonts) - Only check filename changes, ignore content
+  | 'lock' // Lock files (package-lock.json) - Ignore content, just note change
   | 'generated'; // Generated files (dist/, build/) - Ignore content
 
 /**
@@ -123,10 +123,26 @@ function categorizeFile(path: string): FileCategory {
 
   // Asset files
   const assetExtensions = [
-    'png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp',
-    'woff', 'woff2', 'ttf', 'eot', 'otf',
-    'mp4', 'webm', 'mp3', 'wav',
-    'pdf', 'zip', 'tar', 'gz',
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'svg',
+    'ico',
+    'webp',
+    'woff',
+    'woff2',
+    'ttf',
+    'eot',
+    'otf',
+    'mp4',
+    'webm',
+    'mp3',
+    'wav',
+    'pdf',
+    'zip',
+    'tar',
+    'gz',
   ];
   if (assetExtensions.includes(ext)) {
     return 'asset';
@@ -180,10 +196,7 @@ function categorizeFile(path: string): FileCategory {
  * @param category - File category
  * @returns Content string (full or placeholder)
  */
-function extractContent(
-  chunk: string,
-  category: FileCategory
-): string {
+function extractContent(chunk: string, category: FileCategory): string {
   // For low-value categories, use placeholder to save tokens
   if (category === 'lock' || category === 'asset' || category === 'generated') {
     return `[Metadata Only: Content skipped for ${category} file]`;

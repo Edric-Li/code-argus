@@ -84,10 +84,13 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
     console.log(JSON.stringify(files, null, 2));
 
     // Summary statistics
-    const summary = files.reduce((acc, file) => {
-      acc[file.category] = (acc[file.category] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    const summary = files.reduce(
+      (acc, file) => {
+        acc[file.category] = (acc[file.category] || 0) + 1;
+        return acc;
+      },
+      {} as Record<string, number>
+    );
 
     console.log('\n=================================');
     console.log('Category Summary:');

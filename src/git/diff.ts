@@ -50,10 +50,7 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
   // Validate repository path
   const absolutePath = resolve(repoPath);
   if (!existsSync(absolutePath)) {
-    throw new GitError(
-      `Repository path does not exist: ${absolutePath}`,
-      'REPO_NOT_FOUND'
-    );
+    throw new GitError(`Repository path does not exist: ${absolutePath}`, 'REPO_NOT_FOUND');
   }
 
   // Check if it's a git repository
@@ -78,14 +75,11 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
   // Execute three-dot diff: remote/targetBranch...remote/sourceBranch
   // This finds the merge base and shows only changes from sourceBranch on remote
   try {
-    const diff = execSync(
-      `git diff ${remoteTargetBranch}...${remoteSourceBranch}`,
-      {
-        cwd: absolutePath,
-        encoding: 'utf-8',
-        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
-      }
-    );
+    const diff = execSync(`git diff ${remoteTargetBranch}...${remoteSourceBranch}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
+    });
 
     return {
       diff,
