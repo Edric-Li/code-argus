@@ -4,6 +4,8 @@
  */
 
 import { getDiff } from './git/diff.js';
+import { parseDiff } from './git/parser.js';
+import { filterDiff } from './git/filter.js';
 import { GitError } from './git/type.js';
 
 /**
@@ -57,25 +59,39 @@ export function main(): void {
   try {
     const remote = 'origin'; // Default remote
     console.log(`
-@argus/core - Git Diff Extraction
-=================================
+@argus/core - Git Diff Extraction & Analysis
+============================================
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch} (using ${remote}/${sourceBranch})
 Target Branch: ${targetBranch} (using ${remote}/${targetBranch})
 Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
-=================================
+============================================
 `);
 
-    // Get the diff
-    const diff = getDiff(repoPath, sourceBranch, targetBranch);
+    // Step 1: Get the raw diff
+    console.log('Step 1: Extracting diff from remote branches...');
+    const rawDiff = getDiff(repoPath, sourceBranch, targetBranch);
 
-    // Output the diff
-    if (diff.trim()) {
-      console.log('Diff Output:');
-      console.log(diff);
-    } else {
+    if (!rawDiff.trim()) {
       console.log('No differences found between the branches.');
+      return;
     }
+
+    // Step 2: Parse the diff into structured files
+    console.log('Step 2: Parsing diff into structured files...');
+    const parsedFiles = parseDiff(rawDiff);
+    console.log(`Found ${parsedFiles.length} changed file(s)`);
+
+    // Step 3: Filter files that need code review
+    console.log('Step 3: Filtering files for code review...');
+    const cleanedFiles = filterDiff(parsedFiles);
+    console.log(`${cleanedFiles.length} file(s) need review after filtering`);
+
+    // Step 4: Output structured data
+    console.log('\n============================================');
+    console.log('Structured Diff Result:');
+    console.log('============================================\n');
+    console.log(JSON.stringify(cleanedFiles, null, 2));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(`\nGit Error: ${error.message}`);
