@@ -33,23 +33,6 @@ export interface DiffOptions {
 }
 
 /**
- * Type of file change
- */
-export type DiffFileType = 'add' | 'delete' | 'modify';
-
-/**
- * Parsed diff file information
- */
-export interface DiffFile {
-  /** File path (without a/ or b/ prefix) */
-  path: string;
-  /** Diff content (hunks with @@ and +/- changes) */
-  content: string;
-  /** Type of change */
-  type: DiffFileType;
-}
-
-/**
  * Error thrown during git operations
  */
 export class GitError extends Error {

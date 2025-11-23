@@ -4,9 +4,8 @@
  */
 
 import { getDiff } from './git/diff.js';
-import { parseDiff } from './git/parser.js';
-import { filterDiff } from './git/filter.js';
 import { GitError } from './git/type.js';
+import { parseDiff } from './git/parser.js';
 
 /**
  * Print usage information
@@ -59,17 +58,16 @@ export function main(): void {
   try {
     const remote = 'origin'; // Default remote
     console.log(`
-@argus/core - Git Diff Extraction & Analysis
-============================================
+@argus/core - Git Diff Extraction
+=================================
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch} (using ${remote}/${sourceBranch})
 Target Branch: ${targetBranch} (using ${remote}/${targetBranch})
 Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
-============================================
+=================================
 `);
 
-    // Step 1: Get the raw diff
-    console.log('Step 1: Extracting diff from remote branches...');
+    // Get the raw diff
     const rawDiff = getDiff(repoPath, sourceBranch, targetBranch);
 
     if (!rawDiff.trim()) {
@@ -77,21 +75,26 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
       return;
     }
 
-    // Step 2: Parse the diff into structured files
-    console.log('Step 2: Parsing diff into structured files...');
-    const parsedFiles = parseDiff(rawDiff);
-    console.log(`Found ${parsedFiles.length} changed file(s)`);
+    // Parse and categorize the diff
+    console.log('Parsing and categorizing diff files...\n');
+    const files = parseDiff(rawDiff);
 
-    // Step 3: Filter files that need code review
-    console.log('Step 3: Filtering files for code review...');
-    const cleanedFiles = filterDiff(parsedFiles);
-    console.log(`${cleanedFiles.length} file(s) need review after filtering`);
+    // Output parsed results
+    console.log(`Parsed ${files.length} file(s):\n`);
+    console.log(JSON.stringify(files, null, 2));
 
-    // Step 4: Output structured data
-    console.log('\n============================================');
-    console.log('Structured Diff Result:');
-    console.log('============================================\n');
-    console.log(JSON.stringify(cleanedFiles, null, 2));
+    // Summary statistics
+    const summary = files.reduce((acc, file) => {
+      acc[file.category] = (acc[file.category] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>);
+
+    console.log('\n=================================');
+    console.log('Category Summary:');
+    console.log('=================================');
+    for (const [category, count] of Object.entries(summary)) {
+      console.log(`${category.padEnd(12)}: ${count} file(s)`);
+    }
   } catch (error) {
     if (error instanceof GitError) {
       console.error(`\nGit Error: ${error.message}`);
