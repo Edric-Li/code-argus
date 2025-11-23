@@ -192,7 +192,10 @@ export function buildValidatorPrompt(context: ValidatorContext): string {
   sections.push('1. For each issue, use the Read tool to fetch the actual file content');
   sections.push('2. Verify the issue exists at the reported line numbers');
   sections.push('3. Check for any mitigating code that might handle the issue');
-  sections.push('4. Output your validation results as JSON\n');
+  sections.push('4. Output your validation results as JSON');
+  sections.push(
+    '5. **IMPORTANT**: Write all "related_context" and "reasoning" fields in Chinese\n'
+  );
 
   sections.push('## Output Format\n');
   sections.push('```json');
@@ -205,8 +208,8 @@ export function buildValidatorPrompt(context: ValidatorContext): string {
       "grounding_evidence": {
         "checked_files": ["file1.ts", "file2.ts"],
         "checked_symbols": ["functionName", "className"],
-        "related_context": "Description of what you found",
-        "reasoning": "Why you made this decision"
+        "related_context": "Description in Chinese of what you found",
+        "reasoning": "Reasoning in Chinese for why you made this decision"
       }
     }
   ]

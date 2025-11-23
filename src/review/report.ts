@@ -19,6 +19,112 @@ import type {
 import { groupBySeverity } from './aggregator.js';
 
 /**
+ * Chinese translations for report elements
+ */
+const TRANSLATIONS = {
+  zh: {
+    // Headers
+    'Code Review Report': '代码审查报告',
+    Summary: '总结',
+    'Issues Introduced in This PR': '本次 PR 引入的问题',
+    'Pre-existing Issues': '已存在的问题',
+    Issues: '问题',
+    Checklist: '检查清单',
+    Metrics: '指标',
+    Metadata: '元数据',
+
+    // Severity levels
+    Critical: '严重',
+    Errors: '错误',
+    Warnings: '警告',
+    Suggestions: '建议',
+
+    // Risk levels
+    'Risk Level': '风险等级',
+    high: '高',
+    medium: '中',
+    low: '低',
+    HIGH: '高',
+    MEDIUM: '中',
+    LOW: '低',
+
+    // Issue fields
+    Field: '字段',
+    Value: '值',
+    ID: '编号',
+    File: '文件',
+    Location: '位置',
+    Line: '行',
+    Lines: '行',
+    Severity: '严重程度',
+    Category: '分类',
+    Confidence: '置信度',
+    Agent: '检测代理',
+    'Description:': '描述：',
+    'Code:': '代码：',
+    'Suggestion:': '建议：',
+    'Validation Evidence': '验证证据',
+    'Checked Files': '已检查文件',
+    Reasoning: '推理过程',
+
+    // Categories
+    security: '安全',
+    logic: '逻辑',
+    performance: '性能',
+    style: '风格',
+    maintainability: '可维护性',
+
+    // Severity values for issue table
+    error: '错误',
+    warning: '警告',
+    suggestion: '建议',
+
+    // Summary parts
+    'PR Goal': 'PR 目标',
+    'No significant issues found in this review.': '本次审查未发现重大问题。',
+    'Issues Found': '发现的问题',
+    critical: '严重',
+    'error(s)': '个错误',
+    'warning(s)': '个警告',
+    'suggestion(s)': '个建议',
+
+    // Messages
+    'No issues found.': '未发现问题。',
+    'These issues exist in the code but were not introduced by this PR.':
+      '这些问题存在于代码中,但不是由本次 PR 引入的。',
+
+    // Metrics table
+    Metric: '指标',
+    'Total Scanned': '总扫描数',
+    Confirmed: '已确认',
+    Rejected: '已拒绝',
+    Uncertain: '不确定',
+
+    // Metadata
+    'Review Time': '审查时间',
+    'Tokens Used': '使用的令牌数',
+    'Agents Used': '使用的代理',
+
+    // Checklist results
+    pass: '通过',
+    fail: '失败',
+    na: '不适用',
+  },
+} as const;
+
+/**
+ * Translate text based on language setting
+ */
+function translate(text: string, language: 'en' | 'zh'): string {
+  if (language === 'en') {
+    return text;
+  }
+
+  const translation = TRANSLATIONS.zh[text as keyof typeof TRANSLATIONS.zh];
+  return translation || text;
+}
+
+/**
  * Options for report generation
  */
 export interface ReportOptions {
@@ -30,6 +136,10 @@ export interface ReportOptions {
   includeMetadata?: boolean;
   /** Include detailed evidence */
   includeEvidence?: boolean;
+  /** Include existing code issues in report (requires issues to have introduced_in_pr marked) */
+  includeExistingIssues?: boolean;
+  /** Output language */
+  language?: 'en' | 'zh';
 }
 
 /**
@@ -69,6 +179,8 @@ const DEFAULT_OPTIONS: Required<ReportOptions> = {
   includeChecklist: true,
   includeMetadata: true,
   includeEvidence: false,
+  includeExistingIssues: false,
+  language: 'zh',
 };
 
 /**
@@ -135,40 +247,46 @@ export function determineRiskLevel(issues: ValidatedIssue[]): RiskLevel {
 /**
  * Generate a text summary of the review
  */
-export function generateSummary(issues: ValidatedIssue[], context?: ReviewContext): string {
+export function generateSummary(
+  issues: ValidatedIssue[],
+  context?: ReviewContext,
+  language: 'en' | 'zh' = 'zh'
+): string {
   const bySeverity = groupBySeverity(issues);
   const parts: string[] = [];
 
   // Intent summary
   if (context?.intent.primary_goal) {
-    parts.push(`**PR Goal**: ${context.intent.primary_goal}`);
+    parts.push(`**${translate('PR Goal', language)}**: ${context.intent.primary_goal}`);
   }
 
   // Issue count summary
   if (issues.length === 0) {
-    parts.push('No significant issues found in this review.');
+    parts.push(translate('No significant issues found in this review.', language));
   } else {
     const counts: string[] = [];
     if (bySeverity.critical.length > 0) {
-      counts.push(`${bySeverity.critical.length} critical`);
+      counts.push(`${bySeverity.critical.length} ${translate('critical', language)}`);
     }
     if (bySeverity.error.length > 0) {
-      counts.push(`${bySeverity.error.length} error(s)`);
+      counts.push(`${bySeverity.error.length} ${translate('error(s)', language)}`);
     }
     if (bySeverity.warning.length > 0) {
-      counts.push(`${bySeverity.warning.length} warning(s)`);
+      counts.push(`${bySeverity.warning.length} ${translate('warning(s)', language)}`);
     }
     if (bySeverity.suggestion.length > 0) {
-      counts.push(`${bySeverity.suggestion.length} suggestion(s)`);
+      counts.push(`${bySeverity.suggestion.length} ${translate('suggestion(s)', language)}`);
     }
 
-    parts.push(`**Issues Found**: ${counts.join(', ')}`);
+    parts.push(`**${translate('Issues Found', language)}**: ${counts.join(', ')}`);
   }
 
   // Risk assessment
   const riskLevel = determineRiskLevel(issues);
   const riskEmoji = riskLevel === 'high' ? '🔴' : riskLevel === 'medium' ? '🟡' : '🟢';
-  parts.push(`**Risk Level**: ${riskEmoji} ${riskLevel.toUpperCase()}`);
+  parts.push(
+    `**${translate('Risk Level', language)}**: ${riskEmoji} ${translate(riskLevel.toUpperCase(), language)}`
+  );
 
   return parts.join('\n\n');
 }
@@ -181,10 +299,11 @@ export function generateReport(
   checklist: ChecklistItem[],
   metrics: ReviewMetrics,
   context?: ReviewContext,
-  metadata?: { review_time_ms: number; tokens_used: number; agents_used: AgentType[] }
+  metadata?: { review_time_ms: number; tokens_used: number; agents_used: AgentType[] },
+  language: 'en' | 'zh' = 'zh'
 ): ReviewReport {
   return {
-    summary: generateSummary(issues, context),
+    summary: generateSummary(issues, context, language),
     risk_level: determineRiskLevel(issues),
     issues,
     checklist,
@@ -234,74 +353,141 @@ export function formatAsJson(report: ReviewReport, options?: ReportOptions): str
  */
 export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions): string {
   const opts = { ...DEFAULT_OPTIONS, ...options };
+  const lang = opts.language;
   const lines: string[] = [];
 
   // Header
-  lines.push('# Code Review Report');
+  lines.push(`# ${translate('Code Review Report', lang)}`);
   lines.push('');
 
   // Summary
-  lines.push('## Summary');
+  lines.push(`## ${translate('Summary', lang)}`);
   lines.push('');
   lines.push(report.summary);
   lines.push('');
 
   // Issues by severity
   if (report.issues.length > 0) {
-    lines.push('## Issues');
-    lines.push('');
+    // Separate new and existing issues
+    const newIssues = report.issues.filter((i) => i.introduced_in_pr !== false);
+    const existingIssues = report.issues.filter((i) => i.introduced_in_pr === false);
 
-    const bySeverity = groupBySeverity(report.issues);
-
-    // Critical issues
-    if (bySeverity.critical.length > 0) {
-      lines.push('### 🔴 Critical');
+    // New issues introduced in this PR
+    if (newIssues.length > 0) {
+      lines.push(`## ${translate('Issues Introduced in This PR', lang)}`);
       lines.push('');
-      for (const issue of bySeverity.critical) {
-        lines.push(formatIssueMarkdown(issue, opts.includeEvidence));
+
+      const bySeverity = groupBySeverity(newIssues);
+
+      // Critical issues
+      if (bySeverity.critical.length > 0) {
+        lines.push(`### 🔴 ${translate('Critical', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.critical) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
       }
-      lines.push('');
+
+      // Errors
+      if (bySeverity.error.length > 0) {
+        lines.push(`### 🟠 ${translate('Errors', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.error) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
+      }
+
+      // Warnings
+      if (bySeverity.warning.length > 0) {
+        lines.push(`### 🟡 ${translate('Warnings', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.warning) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
+      }
+
+      // Suggestions
+      if (bySeverity.suggestion.length > 0) {
+        lines.push(`### 💡 ${translate('Suggestions', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.suggestion) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
+      }
     }
 
-    // Errors
-    if (bySeverity.error.length > 0) {
-      lines.push('### 🟠 Errors');
+    // Pre-existing issues (if includeExistingIssues is enabled)
+    if (opts.includeExistingIssues && existingIssues.length > 0) {
+      lines.push(`## ${translate('Pre-existing Issues', lang)}`);
       lines.push('');
-      for (const issue of bySeverity.error) {
-        lines.push(formatIssueMarkdown(issue, opts.includeEvidence));
+      lines.push(
+        `> ℹ️ ${translate('These issues exist in the code but were not introduced by this PR.', lang)}`
+      );
+      lines.push('');
+
+      const bySeverity = groupBySeverity(existingIssues);
+
+      // Critical issues
+      if (bySeverity.critical.length > 0) {
+        lines.push(`### 🔴 ${translate('Critical', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.critical) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
       }
-      lines.push('');
+
+      // Errors
+      if (bySeverity.error.length > 0) {
+        lines.push(`### 🟠 ${translate('Errors', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.error) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
+      }
+
+      // Warnings
+      if (bySeverity.warning.length > 0) {
+        lines.push(`### 🟡 ${translate('Warnings', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.warning) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
+      }
+
+      // Suggestions
+      if (bySeverity.suggestion.length > 0) {
+        lines.push(`### 💡 ${translate('Suggestions', lang)}`);
+        lines.push('');
+        for (const issue of bySeverity.suggestion) {
+          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+        }
+        lines.push('');
+      }
     }
 
-    // Warnings
-    if (bySeverity.warning.length > 0) {
-      lines.push('### 🟡 Warnings');
+    if (newIssues.length === 0 && existingIssues.length === 0) {
+      lines.push(`## ${translate('Issues', lang)}`);
       lines.push('');
-      for (const issue of bySeverity.warning) {
-        lines.push(formatIssueMarkdown(issue, opts.includeEvidence));
-      }
-      lines.push('');
-    }
-
-    // Suggestions
-    if (bySeverity.suggestion.length > 0) {
-      lines.push('### 💡 Suggestions');
-      lines.push('');
-      for (const issue of bySeverity.suggestion) {
-        lines.push(formatIssueMarkdown(issue, opts.includeEvidence));
-      }
+      lines.push(translate('No issues found.', lang));
       lines.push('');
     }
   } else {
-    lines.push('## Issues');
+    lines.push(`## ${translate('Issues', lang)}`);
     lines.push('');
-    lines.push('No issues found.');
+    lines.push(translate('No issues found.', lang));
     lines.push('');
   }
 
   // Checklist
   if (opts.includeChecklist && report.checklist.length > 0) {
-    lines.push('## Checklist');
+    lines.push(`## ${translate('Checklist', lang)}`);
     lines.push('');
 
     const byCategory = new Map<string, ChecklistItem[]>();
@@ -312,7 +498,7 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
     }
 
     for (const [category, items] of byCategory) {
-      lines.push(`### ${capitalizeFirst(category)}`);
+      lines.push(`### ${capitalizeFirst(translate(category, lang))}`);
       lines.push('');
       for (const item of items) {
         const icon = item.result === 'pass' ? '✅' : item.result === 'fail' ? '❌' : '➖';
@@ -326,23 +512,25 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
   }
 
   // Metrics
-  lines.push('## Metrics');
+  lines.push(`## ${translate('Metrics', lang)}`);
   lines.push('');
-  lines.push(`| Metric | Value |`);
+  lines.push(`| ${translate('Metric', lang)} | ${translate('Value', lang)} |`);
   lines.push(`|--------|-------|`);
-  lines.push(`| Total Scanned | ${report.metrics.total_scanned} |`);
-  lines.push(`| Confirmed | ${report.metrics.confirmed} |`);
-  lines.push(`| Rejected | ${report.metrics.rejected} |`);
-  lines.push(`| Uncertain | ${report.metrics.uncertain} |`);
+  lines.push(`| ${translate('Total Scanned', lang)} | ${report.metrics.total_scanned} |`);
+  lines.push(`| ${translate('Confirmed', lang)} | ${report.metrics.confirmed} |`);
+  lines.push(`| ${translate('Rejected', lang)} | ${report.metrics.rejected} |`);
+  lines.push(`| ${translate('Uncertain', lang)} | ${report.metrics.uncertain} |`);
   lines.push('');
 
   // Metadata
   if (opts.includeMetadata && report.metadata) {
-    lines.push('## Metadata');
+    lines.push(`## ${translate('Metadata', lang)}`);
     lines.push('');
-    lines.push(`- **Review Time**: ${report.metadata.review_time_ms}ms`);
-    lines.push(`- **Tokens Used**: ${report.metadata.tokens_used}`);
-    lines.push(`- **Agents Used**: ${report.metadata.agents_used.join(', ')}`);
+    lines.push(`- **${translate('Review Time', lang)}**: ${report.metadata.review_time_ms}ms`);
+    lines.push(`- **${translate('Tokens Used', lang)}**: ${report.metadata.tokens_used}`);
+    lines.push(
+      `- **${translate('Agents Used', lang)}**: ${report.metadata.agents_used.join(', ')}`
+    );
     lines.push('');
   }
 
@@ -352,7 +540,11 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
 /**
  * Format a single issue as Markdown
  */
-function formatIssueMarkdown(issue: ValidatedIssue, includeEvidence?: boolean): string {
+function formatIssueMarkdown(
+  issue: ValidatedIssue,
+  includeEvidence?: boolean,
+  language: 'en' | 'zh' = 'zh'
+): string {
   const lines: string[] = [];
 
   // Title with ID
@@ -362,28 +554,30 @@ function formatIssueMarkdown(issue: ValidatedIssue, includeEvidence?: boolean): 
   // Location info (detailed for PR comments)
   const lineRange =
     issue.line_start === issue.line_end
-      ? `Line ${issue.line_start}`
-      : `Lines ${issue.line_start}-${issue.line_end}`;
-  lines.push(`| Field | Value |`);
+      ? `${translate('Line', language)} ${issue.line_start}`
+      : `${translate('Lines', language)} ${issue.line_start}-${issue.line_end}`;
+  lines.push(`| ${translate('Field', language)} | ${translate('Value', language)} |`);
   lines.push(`|-------|-------|`);
-  lines.push(`| **ID** | \`${issue.id}\` |`);
-  lines.push(`| **File** | \`${issue.file}\` |`);
-  lines.push(`| **Location** | ${lineRange} |`);
-  lines.push(`| **Severity** | ${issue.severity} |`);
-  lines.push(`| **Category** | ${issue.category} |`);
-  lines.push(`| **Confidence** | ${Math.round(issue.final_confidence * 100)}% |`);
-  lines.push(`| **Agent** | ${issue.source_agent} |`);
+  lines.push(`| **${translate('ID', language)}** | \`${issue.id}\` |`);
+  lines.push(`| **${translate('File', language)}** | \`${issue.file}\` |`);
+  lines.push(`| **${translate('Location', language)}** | ${lineRange} |`);
+  lines.push(`| **${translate('Severity', language)}** | ${translate(issue.severity, language)} |`);
+  lines.push(`| **${translate('Category', language)}** | ${translate(issue.category, language)} |`);
+  lines.push(
+    `| **${translate('Confidence', language)}** | ${Math.round(issue.final_confidence * 100)}% |`
+  );
+  lines.push(`| **${translate('Agent', language)}** | ${issue.source_agent} |`);
   lines.push('');
 
   // Description
-  lines.push('**Description:**');
+  lines.push(`**${translate('Description:', language)}**`);
   lines.push('');
   lines.push(issue.description);
   lines.push('');
 
   // Code snippet
   if (issue.code_snippet) {
-    lines.push('**Code:**');
+    lines.push(`**${translate('Code:', language)}**`);
     lines.push('```');
     lines.push(issue.code_snippet);
     lines.push('```');
@@ -392,7 +586,7 @@ function formatIssueMarkdown(issue: ValidatedIssue, includeEvidence?: boolean): 
 
   // Suggestion
   if (issue.suggestion) {
-    lines.push('**Suggestion:**');
+    lines.push(`**${translate('Suggestion:', language)}**`);
     lines.push('');
     lines.push(issue.suggestion);
     lines.push('');
@@ -401,11 +595,13 @@ function formatIssueMarkdown(issue: ValidatedIssue, includeEvidence?: boolean): 
   // Evidence
   if (includeEvidence && issue.grounding_evidence) {
     lines.push('<details>');
-    lines.push('<summary>Validation Evidence</summary>');
+    lines.push(`<summary>${translate('Validation Evidence', language)}</summary>`);
     lines.push('');
-    lines.push(`**Checked Files**: ${issue.grounding_evidence.checked_files.join(', ')}`);
+    lines.push(
+      `**${translate('Checked Files', language)}**: ${issue.grounding_evidence.checked_files.join(', ')}`
+    );
     lines.push('');
-    lines.push(`**Reasoning**: ${issue.grounding_evidence.reasoning}`);
+    lines.push(`**${translate('Reasoning', language)}**: ${issue.grounding_evidence.reasoning}`);
     lines.push('</details>');
     lines.push('');
   }

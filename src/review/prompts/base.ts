@@ -145,6 +145,10 @@ You have access to the following tools:
 export const OUTPUT_FORMAT_INSTRUCTIONS = `
 ## Output Format
 
+**IMPORTANT - Language Requirement**:
+- All issue descriptions, suggestions, and explanations MUST be written in Chinese.
+- Use clear, professional Chinese to describe problems and provide suggestions.
+
 You must output your findings as valid JSON with this structure:
 
 \`\`\`json
@@ -159,7 +163,8 @@ ${AGENT_OUTPUT_SCHEMA}
   - \`error\`: Bugs that will cause incorrect behavior
   - \`warning\`: Potential issues, code smells, minor bugs
   - \`suggestion\`: Improvements, style issues, best practices
-- Always provide actionable suggestions for fixes
+- Always provide actionable suggestions for fixes in Chinese
+- Write all descriptions and suggestions in Chinese
 `;
 
 /**
@@ -170,15 +175,17 @@ export const DIFF_ANALYSIS_INSTRUCTIONS = `
 
 When reviewing code changes:
 
-1. **Focus on Changed Code**: Primarily review added and modified lines.
-2. **Consider Context**: Changes might affect surrounding unchanged code.
-3. **Check Dependencies**: Modified functions may impact their callers.
+1. **Focus ONLY on Changed Code**: Review ONLY the lines that were added (marked with \`+\`) or modified. Do NOT review unchanged/existing code.
+2. **Consider Context**: Changes might affect surrounding unchanged code - only report issues if the CHANGE itself introduces the problem.
+3. **Check Dependencies**: Modified functions may impact their callers - but only report if the modification breaks existing functionality.
 4. **Verify Assumptions**: Use Read tool to see the full file, not just the diff.
 
 **Diff Format**:
-- Lines starting with \`+\` are additions
-- Lines starting with \`-\` are deletions
-- Lines without prefix are context
+- Lines starting with \`+\` are additions (REVIEW THESE)
+- Lines starting with \`-\` are deletions (REVIEW THESE)
+- Lines without prefix are context (DO NOT REVIEW THESE - they are unchanged old code)
+
+**CRITICAL RULE**: Only report issues that are introduced BY THIS CHANGE. Do not report pre-existing issues in unchanged code.
 `;
 
 // ============================================================================
@@ -225,6 +232,11 @@ export function buildBaseSystemPrompt(agentRole: string): string {
   return `You are an expert code reviewer specializing in ${agentRole}.
 
 Your task is to analyze code changes and identify issues within your specialty area.
+
+**CRITICAL REQUIREMENTS**:
+1. ONLY review changed code (lines marked with + or -)
+2. NEVER review unchanged existing code (context lines)
+3. All descriptions and suggestions MUST be in Chinese
 
 ${TOOL_USAGE_INSTRUCTIONS}
 
@@ -309,9 +321,16 @@ export function parseAgentResponse(response: string): {
       issues: parsed.issues ?? [],
       checklist: parsed.checklist ?? [],
     };
-  } catch {
+  } catch (error) {
     // Try to extract partial data
     console.error('Failed to parse agent response as JSON');
+    console.error('Error details:', error instanceof Error ? error.message : String(error));
+    console.error('Response length:', response.length);
+    console.error('First 500 chars of response:', response.substring(0, 500));
+    console.error(
+      'Last 500 chars of response:',
+      response.substring(Math.max(0, response.length - 500))
+    );
     return { issues: [], checklist: [] };
   }
 }

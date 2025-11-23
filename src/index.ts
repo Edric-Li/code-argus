@@ -35,7 +35,11 @@ Options (review command):
                        - markdown: Human-readable markdown
                        - summary: Brief CLI summary
                        - pr-comments: JSON for PR comment integration
+  --language=<lang>    Output language (default: zh)
+                       - zh: Chinese (中文)
+                       - en: English
   --skip-validation    Skip issue validation (faster but less accurate)
+  --include-existing   Include pre-existing issues (not introduced in this PR)
   --verbose            Enable verbose output
 
 Note:
@@ -54,12 +58,16 @@ Examples:
  */
 function parseOptions(args: string[]): {
   format: 'json' | 'markdown' | 'summary' | 'pr-comments';
+  language: 'en' | 'zh';
   skipValidation: boolean;
+  includeExisting: boolean;
   verbose: boolean;
 } {
   const options = {
     format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
+    language: 'zh' as 'en' | 'zh',
     skipValidation: false,
+    includeExisting: false,
     verbose: false,
   };
 
@@ -74,8 +82,15 @@ function parseOptions(args: string[]): {
       ) {
         options.format = format;
       }
+    } else if (arg.startsWith('--language=')) {
+      const language = arg.split('=')[1];
+      if (language === 'en' || language === 'zh') {
+        options.language = language;
+      }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
+    } else if (arg === '--include-existing') {
+      options.includeExisting = true;
     } else if (arg === '--verbose') {
       options.verbose = true;
     }
@@ -110,11 +125,16 @@ Format:        ${options.format}
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
+      includeExistingIssues: options.includeExisting,
     },
   });
 
   // Output formatted report
-  const formatted = formatReport(report, { format: options.format });
+  const formatted = formatReport(report, {
+    format: options.format,
+    includeExistingIssues: options.includeExisting,
+    language: options.language,
+  });
   console.log(formatted);
 }
 

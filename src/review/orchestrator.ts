@@ -4,7 +4,7 @@
  * Coordinates the multi-agent code review process using Claude Agent SDK.
  */
 
-import { query, type AgentDefinition, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   ReviewContext,
   ReviewReport,
@@ -17,11 +17,7 @@ import type {
   ChecklistItem,
 } from './types.js';
 import { createStandards } from './standards/index.js';
-import {
-  buildBaseSystemPrompt,
-  parseAgentResponse,
-  AGENT_OUTPUT_JSON_SCHEMA,
-} from './prompts/index.js';
+import { buildBaseSystemPrompt, parseAgentResponse } from './prompts/index.js';
 import { buildSpecialistPrompt, standardsToText } from './prompts/specialist.js';
 import { aggregate } from './aggregator.js';
 import { calculateMetrics, generateReport } from './report.js';
@@ -39,6 +35,7 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
+  includeExistingIssues: false,
 };
 
 /**
@@ -114,13 +111,16 @@ export class ReviewOrchestrator {
       console.log('[Orchestrator] Aggregating results...');
     }
 
-    const aggregationResult = aggregate(validatedIssues, checklists);
+    const aggregationResult = aggregate(validatedIssues, checklists, {
+      diffFiles: context.diffFiles,
+      onlyChangedLines: !this.options.includeExistingIssues, // Filter to only show issues in changed lines unless includeExistingIssues is true
+    });
     const aggregatedIssues = aggregationResult.issues;
     const aggregatedChecklist = aggregationResult.checklist;
 
     if (this.options.verbose) {
       console.log(
-        `[Orchestrator] Aggregation: ${aggregationResult.stats.duplicates_removed} duplicates removed`
+        `[Orchestrator] Aggregation: ${aggregationResult.stats.duplicates_removed} duplicates removed, ${aggregationResult.stats.existing_code_filtered} existing code issues filtered`
       );
     }
 
@@ -137,7 +137,8 @@ export class ReviewOrchestrator {
       aggregatedChecklist,
       metrics,
       context,
-      metadata
+      metadata,
+      'zh' // Language will be set when formatting the report
     );
 
     if (this.options.verbose) {
@@ -182,6 +183,7 @@ export class ReviewOrchestrator {
       intent,
       fileAnalyses: analysisResult.changes,
       standards,
+      diffFiles,
     };
   }
 
@@ -242,36 +244,18 @@ export class ReviewOrchestrator {
     // Build system prompt
     const systemPrompt = buildBaseSystemPrompt(agentType);
 
-    // Define the agent
-    const agentDefinitions: Record<string, AgentDefinition> = {
-      [agentType]: {
-        description: this.getAgentDescription(agentType),
-        tools: ['Read', 'Grep', 'Glob'],
-        prompt: systemPrompt,
-        model: 'sonnet',
-      },
-    };
-
     let tokensUsed = 0;
     let resultText = '';
 
     // Run the agent using Claude Agent SDK
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+
     const queryStream = query({
-      prompt: userPrompt,
+      prompt: fullPrompt,
       options: {
         cwd: context.repoPath,
-        agents: agentDefinitions,
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: systemPrompt,
-        },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        outputFormat: {
-          type: 'json_schema',
-          schema: AGENT_OUTPUT_JSON_SCHEMA,
-        },
         maxTurns: 20,
       },
     });
@@ -323,20 +307,6 @@ export class ReviewOrchestrator {
   }
 
   /**
-   * Get agent description for SDK
-   */
-  private getAgentDescription(agentType: AgentType): string {
-    const descriptions: Record<AgentType, string> = {
-      'security-reviewer': 'Security vulnerabilities and injection detection specialist',
-      'logic-reviewer': 'Logic errors and bug detection specialist',
-      'style-reviewer': 'Code style and consistency specialist',
-      'performance-reviewer': 'Performance issues and optimization specialist',
-      validator: 'Issue validation and grounding specialist',
-    };
-    return descriptions[agentType] || 'Code review specialist';
-  }
-
-  /**
    * Validate issues using the validator agent
    */
   private async validateIssues(
@@ -373,38 +343,28 @@ export class ReviewOrchestrator {
     const systemPrompt = `You are an expert code reviewer specializing in validating issues discovered by other agents.
 Your job is to verify each issue by reading the actual code and grounding claims in evidence.
 
+**CRITICAL REQUIREMENTS**:
+1. All explanations in "related_context" and "reasoning" must be in Chinese
+
 For each issue:
 1. Read the actual file using the Read tool
 2. Verify the issue exists at the reported location
 3. Check for mitigating code that might handle the issue
 4. Make a decision: confirm, reject, or uncertain
+5. Write all explanations in Chinese
 
 Output your results as JSON with the validated_issues array.`;
-
-    // Define validator agent
-    const agentDefinitions: Record<string, AgentDefinition> = {
-      validator: {
-        description: 'Issue validation and grounding specialist',
-        tools: ['Read', 'Grep', 'Glob'],
-        prompt: systemPrompt,
-        model: 'sonnet',
-      },
-    };
 
     let tokensUsed = 0;
     let resultText = '';
 
     // Run validator using Claude Agent SDK
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+
     const queryStream = query({
-      prompt: userPrompt,
+      prompt: fullPrompt,
       options: {
         cwd: context.repoPath,
-        agents: agentDefinitions,
-        systemPrompt: {
-          type: 'preset',
-          preset: 'claude_code',
-          append: systemPrompt,
-        },
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns: 30, // Allow more turns for validation
@@ -518,8 +478,14 @@ Output your results as JSON with the validated_issues array.`;
       }
 
       return validatedIssues;
-    } catch {
+    } catch (error) {
       console.error('[Orchestrator] Failed to parse validation result');
+      console.error(
+        '[Orchestrator] Error details:',
+        error instanceof Error ? error.message : String(error)
+      );
+      console.error('[Orchestrator] Result text length:', resultText.length);
+      console.error('[Orchestrator] First 500 chars:', resultText.substring(0, 500));
       return this.markIssuesAsPending(originalIssues);
     }
   }
