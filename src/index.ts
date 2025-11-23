@@ -6,7 +6,9 @@
 import { getDiff } from './git/diff.js';
 import { GitError } from './git/type.js';
 import { parseDiff } from './git/parser.js';
+import { getPRCommits } from './git/commits.js';
 import { createDiffAnalyzer } from './analyzer/index.js';
+import { analyzeIntent, filterCommits } from './intent/index.js';
 
 /**
  * Print usage information
@@ -177,7 +179,7 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
 
     // Metadata
     console.log('=================================');
-    console.log('Analysis Metadata:');
+    console.log('Diff Analysis Metadata:');
     console.log('=================================');
     console.log(`  Total files:    ${result.metadata.total_files}`);
     console.log(`  Analyzed:       ${result.metadata.analyzed_files}`);
@@ -185,11 +187,69 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
     console.log(`  Batches:        ${result.metadata.batches}`);
     console.log(`  Tokens used:    ${result.metadata.total_tokens}`);
 
+    // Get PR commits
+    console.log('\n=================================');
+    console.log('Fetching PR Commits...');
+    console.log('=================================\n');
+
+    const commits = getPRCommits(repoPath, sourceBranch, targetBranch, remote);
+    const filterResult = filterCommits(commits);
+
+    console.log(`Total commits: ${filterResult.stats.total}`);
+    console.log(`  Valid:   ${filterResult.stats.valid}`);
+    console.log(`  Reverts: ${filterResult.stats.reverts}`);
+    console.log(`  Vague:   ${filterResult.stats.vague}`);
+    console.log(`  Merges:  ${filterResult.stats.merges}`);
+
+    if (filterResult.valid.length > 0) {
+      console.log('\nValid commits:');
+      for (const commit of filterResult.valid) {
+        console.log(`  - ${commit.subject}`);
+      }
+    }
+
+    if (filterResult.excluded.length > 0) {
+      console.log('\nExcluded commits:');
+      for (const commit of filterResult.excluded) {
+        console.log(`  - [${commit.excludeReason}] ${commit.subject}`);
+      }
+    }
+
+    // Intent Analysis
+    console.log('\n=================================');
+    console.log('Analyzing PR Intent...');
+    console.log('=================================\n');
+
+    const intent = await analyzeIntent(commits, result, filterResult);
+
+    // Display intent analysis
+    console.log('📋 Intent Analysis:');
+    console.log('=================================\n');
+
+    console.log(`🎯 Primary Goal: ${intent.primary_goal}\n`);
+
+    console.log('📝 Summary:');
+    console.log(`${intent.summary}\n`);
+
+    if (intent.change_categories.length > 0) {
+      console.log(`🏷️  Categories: ${intent.change_categories.join(', ')}`);
+    }
+
+    console.log(`📊 Confidence: ${intent.confidence}`);
+
+    console.log('\n=================================');
+    console.log('Intent Metadata:');
+    console.log('=================================');
+    console.log(`  Total commits:    ${intent.metadata.total_commits}`);
+    console.log(`  Valid commits:    ${intent.metadata.valid_commits}`);
+    console.log(`  Excluded commits: ${intent.metadata.excluded_commits}`);
+    console.log(`  Tokens used:      ${intent.metadata.tokens_used}`);
+
     // Output full JSON for debugging
     console.log('\n=================================');
     console.log('Full Analysis (JSON):');
     console.log('=================================');
-    console.log(JSON.stringify(result, null, 2));
+    console.log(JSON.stringify({ diffAnalysis: result, intentAnalysis: intent }, null, 2));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(`\nGit Error: ${error.message}`);
