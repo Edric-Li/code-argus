@@ -15,12 +15,16 @@ Usage: tsx src/index.ts <repoPath> <sourceBranch> <targetBranch>
 
 Arguments:
   repoPath      Path to the git repository
-  sourceBranch  Source branch (contains new code)
-  targetBranch  Target branch (merge destination, baseline)
+  sourceBranch  Source branch name (will use origin/<sourceBranch>)
+  targetBranch  Target branch name (will use origin/<targetBranch>)
+
+Note:
+  This tool compares REMOTE branches (origin/...) to match GitHub PR/GitLab MR behavior.
+  Make sure to fetch latest changes before running.
 
 Example:
-  tsx src/index.ts /path/to/repo feature/new-feature main
-  npm run dev /path/to/repo feature/new-feature main
+  tsx src/index.ts /path/to/repo feature/new-feature develop
+  npm run dev /path/to/repo Alex/bugfix/bug3303 develop
 `);
 }
 
@@ -51,13 +55,14 @@ export function main(): void {
   }
 
   try {
+    const remote = 'origin'; // Default remote
     console.log(`
 @argus/core - Git Diff Extraction
 =================================
 Repository:    ${repoPath}
-Source Branch: ${sourceBranch}
-Target Branch: ${targetBranch}
-Diff Command:  git diff ${targetBranch}...${sourceBranch}
+Source Branch: ${sourceBranch} (using ${remote}/${sourceBranch})
+Target Branch: ${targetBranch} (using ${remote}/${targetBranch})
+Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
 =================================
 `);
 

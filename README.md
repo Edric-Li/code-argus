@@ -1,6 +1,14 @@
-# Code Argus Core
+# @argus/core
 
-现代化的 TypeScript 项目，使用最新的 Node.js 规范。
+自动化代码审查的独立 CLI 工具 - Git Diff 提取与分析
+
+## 功能特性
+
+- 使用三点式 Diff (`git diff targetBranch...sourceBranch`) 提取代码变更
+- 基于 Merge Base 对比，只显示源分支的实际变更
+- TypeScript 编写，类型安全
+- 使用 Node.js 原生 `child_process`，无第三方依赖
+- 完善的错误处理
 
 ## 快速开始
 
@@ -10,22 +18,69 @@
 npm install
 ```
 
-### 开发模式
+### 使用方法
+
+#### 命令格式
 
 ```bash
-# 运行主入口
-npm run dev
+npm run dev <repoPath> <sourceBranch> <targetBranch>
+```
 
-# 执行任意 TypeScript 文件（快速验证）
-npm run exec src/examples/demo.ts
+或直接使用 tsx：
+
+```bash
+tsx src/index.ts <repoPath> <sourceBranch> <targetBranch>
+```
+
+#### 参数说明
+
+- `repoPath` - Git 仓库路径（可以使用相对路径或绝对路径）
+- `sourceBranch` - 源分支（包含新代码的开发分支）
+- `targetBranch` - 目标分支（要合并进去的主分支，作为基准）
+
+#### 示例
+
+```bash
+# 比较当前仓库的 feature 分支与 main 分支
+npm run dev . feature/new-feature main
+
+# 比较指定仓库路径
+npm run dev /path/to/repo feature/auth-system main
+
+# 比较 develop 和 master 分支
+npm run dev ~/projects/my-app develop master
+```
+
+## 项目结构
+
+```
+src/
+├── index.ts           # CLI 入口点，参数解析和输出
+├── git/
+│   ├── type.ts       # Git 操作相关的类型定义
+│   └── diff.ts       # Git Diff 核心逻辑
+├── utils/            # 工具函数
+├── types/            # 通用类型定义
+└── examples/         # 示例代码
+```
+
+## 技术栈
+
+- **TypeScript 5.7** - 类型安全，严格模式
+- **ES Modules** - 现代模块系统 (`"type": "module"`)
+- **tsx** - 快速执行 TypeScript（无需预编译）
+- **Node.js 22+** - 最新 Node.js 特性
+- **原生 child_process** - 直接调用 Git 命令
+
+## 开发命令
+
+```bash
+# 运行 CLI（需要提供参数）
+npm run dev <repoPath> <sourceBranch> <targetBranch>
 
 # 类型检查
 npm run type-check
-```
 
-### 构建
-
-```bash
 # 编译为 JavaScript
 npm run build
 
@@ -33,20 +88,45 @@ npm run build
 npm start
 ```
 
-## 项目结构
+## 工作原理
+
+### 三点式 Diff
+
+使用 `git diff targetBranch...sourceBranch` 命令：
+
+1. Git 首先找到两个分支的 Merge Base（共同祖先）
+2. 然后比较 Merge Base 和 sourceBranch 的差异
+3. 这样可以只显示 sourceBranch 上的实际变更，排除 targetBranch 上的其他提交
+
+### 示例场景
 
 ```
-src/
-├── index.ts         # 主入口文件
-├── core/            # 核心业务逻辑
-├── utils/           # 工具函数
-├── types/           # 类型定义
-└── examples/        # 示例/验证代码
+main:     A --- B --- C
+                \
+feature:         D --- E
 ```
 
-## 技术栈
+- `git diff main...feature` 只显示 D 和 E 的变更
+- Merge Base 是 B
+- 结果等同于 `git diff B..E`
 
-- **TypeScript 5.7** - 类型安全
-- **ES Modules** - 现代模块系统
-- **tsx** - 快速执行 TypeScript
-- **Node.js 22+** - 最新 Node.js 特性
+## 错误处理
+
+工具会检测并报告以下错误：
+
+- 仓库路径不存在
+- 路径不是有效的 Git 仓库
+- 分支不存在或无效
+- Git 命令执行失败
+
+## 后续规划
+
+- [ ] 支持输出格式化（JSON、Markdown）
+- [ ] 集成 AI 代码审查
+- [ ] 支持多仓库批量处理
+- [ ] 添加配置文件支持
+- [ ] 生成代码审查报告
+
+## License
+
+MIT

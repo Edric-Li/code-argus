@@ -9,26 +9,29 @@ import type { DiffOptions, DiffResult } from './type.js';
 import { GitError } from './type.js';
 
 /**
- * Get git diff between two branches using three-dot syntax
+ * Get git diff between two remote branches using three-dot syntax
  *
- * Uses `git diff targetBranch...sourceBranch` to find the merge base
- * and only compare changes from the source branch.
+ * Uses `git diff origin/targetBranch...origin/sourceBranch` to find the merge base
+ * and only compare changes from the source branch on remote.
  *
  * @param repoPath - Path to the git repository
- * @param sourceBranch - Source branch (contains new code)
- * @param targetBranch - Target branch (merge destination, baseline)
+ * @param sourceBranch - Source branch name (will be prefixed with remote/)
+ * @param targetBranch - Target branch name (will be prefixed with remote/)
+ * @param remote - Remote name (defaults to 'origin')
  * @returns Diff string from git command
  * @throws {GitError} If git command fails or repository is invalid
  */
 export function getDiff(
   repoPath: string,
   sourceBranch: string,
-  targetBranch: string
+  targetBranch: string,
+  remote: string = 'origin'
 ): string {
   const options: DiffOptions = {
     repoPath,
     sourceBranch,
     targetBranch,
+    remote,
   };
 
   return getDiffWithOptions(options).diff;
@@ -42,7 +45,7 @@ export function getDiff(
  * @throws {GitError} If git command fails or repository is invalid
  */
 export function getDiffWithOptions(options: DiffOptions): DiffResult {
-  const { repoPath, sourceBranch, targetBranch } = options;
+  const { repoPath, sourceBranch, targetBranch, remote = 'origin' } = options;
 
   // Validate repository path
   const absolutePath = resolve(repoPath);
@@ -68,11 +71,15 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
     );
   }
 
-  // Execute three-dot diff: targetBranch...sourceBranch
-  // This finds the merge base and shows only changes from sourceBranch
+  // Build remote branch references
+  const remoteSourceBranch = `${remote}/${sourceBranch}`;
+  const remoteTargetBranch = `${remote}/${targetBranch}`;
+
+  // Execute three-dot diff: remote/targetBranch...remote/sourceBranch
+  // This finds the merge base and shows only changes from sourceBranch on remote
   try {
     const diff = execSync(
-      `git diff ${targetBranch}...${sourceBranch}`,
+      `git diff ${remoteTargetBranch}...${remoteSourceBranch}`,
       {
         cwd: absolutePath,
         encoding: 'utf-8',
@@ -85,11 +92,12 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
       sourceBranch,
       targetBranch,
       repoPath: absolutePath,
+      remote,
     };
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
     throw new GitError(
-      `Failed to get diff between ${targetBranch}...${sourceBranch}`,
+      `Failed to get diff between ${remoteTargetBranch}...${remoteSourceBranch}`,
       'DIFF_FAILED',
       err.stderr || err.message
     );

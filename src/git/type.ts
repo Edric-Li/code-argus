@@ -14,6 +14,8 @@ export interface DiffResult {
   targetBranch: string;
   /** Repository path where diff was executed */
   repoPath: string;
+  /** Remote name used for diff (e.g., 'origin') */
+  remote: string;
 }
 
 /**
@@ -26,6 +28,8 @@ export interface DiffOptions {
   sourceBranch: string;
   /** Target branch (merge destination, used as baseline) */
   targetBranch: string;
+  /** Remote name to use (defaults to 'origin') */
+  remote?: string;
 }
 
 /**
