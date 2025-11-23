@@ -6,6 +6,7 @@
 import { getDiff } from './git/diff.js';
 import { GitError } from './git/type.js';
 import { parseDiff } from './git/parser.js';
+import { createDiffAnalyzer } from './analyzer/index.js';
 
 /**
  * Print usage information
@@ -32,7 +33,7 @@ Example:
 /**
  * Main CLI function
  */
-export function main(): void {
+export async function main(): Promise<void> {
   // Parse command line arguments
   // process.argv[0] = node executable
   // process.argv[1] = script path
@@ -79,10 +80,6 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
     console.log('Parsing and categorizing diff files...\n');
     const files = parseDiff(rawDiff);
 
-    // Output parsed results
-    console.log(`Parsed ${files.length} file(s):\n`);
-    console.log(JSON.stringify(files, null, 2));
-
     // Summary statistics
     const summary = files.reduce(
       (acc, file) => {
@@ -92,12 +89,107 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
       {} as Record<string, number>
     );
 
-    console.log('\n=================================');
-    console.log('Category Summary:');
+    console.log(`Parsed ${files.length} file(s):`);
     console.log('=================================');
+    console.log('Category Summary:');
     for (const [category, count] of Object.entries(summary)) {
-      console.log(`${category.padEnd(12)}: ${count} file(s)`);
+      console.log(`  ${category.padEnd(12)}: ${count} file(s)`);
     }
+    console.log('=================================\n');
+
+    // Analyze with LLM
+    console.log('Analyzing changes with LLM...\n');
+    const analyzer = createDiffAnalyzer();
+    const result = await analyzer.analyze(files);
+
+    // Output analysis results
+    console.log('=================================');
+    console.log('Analysis Results:');
+    console.log('=================================\n');
+
+    // Group by risk level
+    const highRisk = result.changes.filter((c) => c.risk_level === 'HIGH');
+    const mediumRisk = result.changes.filter((c) => c.risk_level === 'MEDIUM');
+    const lowRisk = result.changes.filter((c) => c.risk_level === 'LOW');
+
+    if (highRisk.length > 0) {
+      console.log('🔴 HIGH RISK:');
+      for (const change of highRisk) {
+        console.log(`  - ${change.file_path}`);
+        const hints = change.semantic_hints;
+
+        // Show changed interfaces
+        if (hints.interfaces?.length) {
+          for (const iface of hints.interfaces) {
+            console.log(`    [Interface] ${iface.name}`);
+            if (iface.added_fields?.length) {
+              console.log(`      + added: ${iface.added_fields.join(', ')}`);
+            }
+            if (iface.removed_fields?.length) {
+              console.log(`      - removed: ${iface.removed_fields.join(', ')}`);
+            }
+          }
+        }
+
+        // Show changed functions
+        if (hints.functions?.length) {
+          for (const func of hints.functions) {
+            const exported = func.is_exported ? ' (exported)' : '';
+            console.log(`    [Function] ${func.name} - ${func.change_type}${exported}`);
+            if (func.added_params?.length) {
+              console.log(`      + params: ${func.added_params.join(', ')}`);
+            }
+            if (func.removed_params?.length) {
+              console.log(`      - params: ${func.removed_params.join(', ')}`);
+            }
+          }
+        }
+
+        // Show summary if no details
+        if (!hints.interfaces?.length && !hints.functions?.length && hints.summary) {
+          console.log(`    → ${hints.summary}`);
+        }
+      }
+      console.log();
+    }
+
+    if (mediumRisk.length > 0) {
+      console.log('🟡 MEDIUM RISK:');
+      for (const change of mediumRisk) {
+        console.log(`  - ${change.file_path}`);
+        if (change.semantic_hints.summary) {
+          console.log(`    → ${change.semantic_hints.summary}`);
+        }
+      }
+      console.log();
+    }
+
+    if (lowRisk.length > 0) {
+      console.log('🟢 LOW RISK:');
+      for (const change of lowRisk) {
+        console.log(`  - ${change.file_path}`);
+        if (change.semantic_hints.summary) {
+          console.log(`    → ${change.semantic_hints.summary}`);
+        }
+      }
+      console.log();
+    }
+
+    // Metadata
+    console.log('=================================');
+    console.log('Analysis Metadata:');
+    console.log('=================================');
+    console.log(`  Total files:    ${result.metadata.total_files}`);
+    console.log(`  Analyzed:       ${result.metadata.analyzed_files}`);
+    console.log(`  Skipped:        ${result.metadata.skipped_files}`);
+    console.log(`  Batches:        ${result.metadata.batches}`);
+    console.log(`  Tokens used:    ${result.metadata.total_tokens}`);
+
+    // Output full JSON for debugging
+    console.log('\n=================================');
+    console.log('Full Analysis (JSON):');
+    console.log('=================================');
+    console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     if (error instanceof GitError) {
       console.error(`\nGit Error: ${error.message}`);
