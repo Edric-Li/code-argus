@@ -301,7 +301,245 @@ export function buildChecklistSection(items: Array<{ id: string; question: strin
 // ============================================================================
 
 /**
- * Parse agent JSON response
+ * Attempt to repair truncated JSON by closing open strings, arrays, and objects
+ */
+function repairTruncatedJson(jsonStr: string): string {
+  let repaired = jsonStr.trim();
+
+  // Track open brackets and braces
+  let inString = false;
+  let escapeNext = false;
+  const stack: string[] = [];
+
+  for (let i = 0; i < repaired.length; i++) {
+    const char = repaired[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\' && inString) {
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (char === '{' || char === '[') {
+        stack.push(char);
+      } else if (char === '}') {
+        if (stack.length > 0 && stack[stack.length - 1] === '{') {
+          stack.pop();
+        }
+      } else if (char === ']') {
+        if (stack.length > 0 && stack[stack.length - 1] === '[') {
+          stack.pop();
+        }
+      }
+    }
+  }
+
+  // If we're in a string, close it
+  if (inString) {
+    // Find the last complete value before truncation
+    // Try to truncate at the last complete field
+    const lastCompleteComma = repaired.lastIndexOf('",');
+    const lastCompleteColon = repaired.lastIndexOf('": ');
+
+    if (lastCompleteComma > lastCompleteColon && lastCompleteComma > 0) {
+      // Truncate after the last complete field
+      repaired = repaired.substring(0, lastCompleteComma + 1);
+      // Recalculate stack after truncation
+      inString = false;
+      stack.length = 0;
+      for (let i = 0; i < repaired.length; i++) {
+        const char = repaired[i];
+        if (escapeNext) {
+          escapeNext = false;
+          continue;
+        }
+        if (char === '\\' && inString) {
+          escapeNext = true;
+          continue;
+        }
+        if (char === '"' && !escapeNext) {
+          inString = !inString;
+          continue;
+        }
+        if (!inString) {
+          if (char === '{' || char === '[') {
+            stack.push(char);
+          } else if (char === '}' && stack.length > 0 && stack[stack.length - 1] === '{') {
+            stack.pop();
+          } else if (char === ']' && stack.length > 0 && stack[stack.length - 1] === '[') {
+            stack.pop();
+          }
+        }
+      }
+    } else {
+      // Just close the string with a placeholder
+      repaired += '..."';
+    }
+  }
+
+  // Close any remaining open brackets/braces in reverse order
+  while (stack.length > 0) {
+    const open = stack.pop();
+    if (open === '{') {
+      repaired += '}';
+    } else if (open === '[') {
+      repaired += ']';
+    }
+  }
+
+  return repaired;
+}
+
+/**
+ * Extract individual issue objects from a potentially truncated JSON array
+ */
+function extractPartialIssues(jsonStr: string): RawIssue[] {
+  const issues: RawIssue[] = [];
+
+  // Find the issues array
+  const issuesMatch = jsonStr.match(/"issues"\s*:\s*\[/);
+  if (!issuesMatch || issuesMatch.index === undefined) {
+    return issues;
+  }
+
+  const startIdx = issuesMatch.index + issuesMatch[0].length;
+
+  // Try to extract individual issue objects
+  let depth = 0;
+  let objectStart = -1;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = startIdx; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\' && inString) {
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (char === '{') {
+        if (depth === 0) {
+          objectStart = i;
+        }
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth === 0 && objectStart !== -1) {
+          // Found a complete object
+          const objectStr = jsonStr.substring(objectStart, i + 1);
+          try {
+            const issue = JSON.parse(objectStr) as RawIssue;
+            if (issue.id && issue.file && issue.category) {
+              issues.push(issue);
+            }
+          } catch {
+            // Skip malformed objects
+          }
+          objectStart = -1;
+        }
+      } else if (char === ']' && depth === 0) {
+        // End of issues array
+        break;
+      }
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Extract individual checklist items from a potentially truncated JSON array
+ */
+function extractPartialChecklist(jsonStr: string): ChecklistItem[] {
+  const checklist: ChecklistItem[] = [];
+
+  // Find the checklist array
+  const checklistMatch = jsonStr.match(/"checklist"\s*:\s*\[/);
+  if (!checklistMatch || checklistMatch.index === undefined) {
+    return checklist;
+  }
+
+  const startIdx = checklistMatch.index + checklistMatch[0].length;
+
+  // Try to extract individual checklist objects
+  let depth = 0;
+  let objectStart = -1;
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = startIdx; i < jsonStr.length; i++) {
+    const char = jsonStr[i];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\' && inString) {
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"' && !escapeNext) {
+      inString = !inString;
+      continue;
+    }
+
+    if (!inString) {
+      if (char === '{') {
+        if (depth === 0) {
+          objectStart = i;
+        }
+        depth++;
+      } else if (char === '}') {
+        depth--;
+        if (depth === 0 && objectStart !== -1) {
+          // Found a complete object
+          const objectStr = jsonStr.substring(objectStart, i + 1);
+          try {
+            const item = JSON.parse(objectStr) as ChecklistItem;
+            if (item.id && item.category && item.question && item.result) {
+              checklist.push(item);
+            }
+          } catch {
+            // Skip malformed objects
+          }
+          objectStart = -1;
+        }
+      } else if (char === ']' && depth === 0) {
+        // End of checklist array
+        break;
+      }
+    }
+  }
+
+  return checklist;
+}
+
+/**
+ * Parse agent JSON response with support for truncated responses
  */
 export function parseAgentResponse(response: string): {
   issues: RawIssue[];
@@ -311,6 +549,7 @@ export function parseAgentResponse(response: string): {
   const jsonMatch = response.match(/```(?:json)?\s*([\s\S]*?)```/);
   const jsonStr = jsonMatch?.[1] ?? response;
 
+  // First, try to parse as-is
   try {
     const parsed = JSON.parse(jsonStr.trim()) as {
       issues?: RawIssue[];
@@ -321,17 +560,51 @@ export function parseAgentResponse(response: string): {
       issues: parsed.issues ?? [],
       checklist: parsed.checklist ?? [],
     };
-  } catch (error) {
-    // Try to extract partial data
-    console.error('Failed to parse agent response as JSON');
-    console.error('Error details:', error instanceof Error ? error.message : String(error));
-    console.error('Response length:', response.length);
-    console.error('First 500 chars of response:', response.substring(0, 500));
-    console.error(
-      'Last 500 chars of response:',
-      response.substring(Math.max(0, response.length - 500))
-    );
-    return { issues: [], checklist: [] };
+  } catch (firstError) {
+    // Try to repair truncated JSON
+    const repaired = repairTruncatedJson(jsonStr);
+
+    try {
+      const parsed = JSON.parse(repaired) as {
+        issues?: RawIssue[];
+        checklist?: ChecklistItem[];
+      };
+
+      console.warn('Successfully parsed repaired JSON (response was truncated)');
+      return {
+        issues: parsed.issues ?? [],
+        checklist: parsed.checklist ?? [],
+      };
+    } catch {
+      // Fall back to extracting partial data
+      console.warn('JSON repair failed, extracting partial data from truncated response');
+      console.warn(
+        'Original error:',
+        firstError instanceof Error ? firstError.message : String(firstError)
+      );
+
+      const issues = extractPartialIssues(jsonStr);
+      const checklist = extractPartialChecklist(jsonStr);
+
+      if (issues.length > 0 || checklist.length > 0) {
+        console.warn(`Extracted ${issues.length} issues and ${checklist.length} checklist items`);
+        return { issues, checklist };
+      }
+
+      // Complete failure
+      console.error('Failed to parse agent response as JSON');
+      console.error(
+        'Error details:',
+        firstError instanceof Error ? firstError.message : String(firstError)
+      );
+      console.error('Response length:', response.length);
+      console.error('First 500 chars of response:', response.substring(0, 500));
+      console.error(
+        'Last 500 chars of response:',
+        response.substring(Math.max(0, response.length - 500))
+      );
+      return { issues: [], checklist: [] };
+    }
   }
 }
 
