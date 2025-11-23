@@ -3,33 +3,119 @@
  * Main Entry Point
  */
 
+import 'dotenv/config';
+
 import { getDiff } from './git/diff.js';
 import { GitError } from './git/type.js';
 import { parseDiff } from './git/parser.js';
 import { getPRCommits } from './git/commits.js';
 import { createDiffAnalyzer } from './analyzer/index.js';
 import { analyzeIntent, filterCommits } from './intent/index.js';
+import { review as runReview, formatReport } from './review/index.js';
 
 /**
  * Print usage information
  */
 function printUsage(): void {
   console.log(`
-Usage: tsx src/index.ts <repoPath> <sourceBranch> <targetBranch>
+Usage: tsx src/index.ts <command> <repoPath> <sourceBranch> <targetBranch> [options]
+
+Commands:
+  analyze   Run diff analysis and intent detection (default)
+  review    Run full AI code review with multiple agents
 
 Arguments:
   repoPath      Path to the git repository
   sourceBranch  Source branch name (will use origin/<sourceBranch>)
   targetBranch  Target branch name (will use origin/<targetBranch>)
 
+Options (review command):
+  --format=<format>    Output format (default: markdown)
+                       - json: Full JSON report
+                       - markdown: Human-readable markdown
+                       - summary: Brief CLI summary
+                       - pr-comments: JSON for PR comment integration
+  --skip-validation    Skip issue validation (faster but less accurate)
+  --verbose            Enable verbose output
+
 Note:
   This tool compares REMOTE branches (origin/...) to match GitHub PR/GitLab MR behavior.
   Make sure to fetch latest changes before running.
 
-Example:
-  tsx src/index.ts /path/to/repo feature/new-feature develop
+Examples:
+  tsx src/index.ts analyze /path/to/repo feature/new-feature develop
+  tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json
   npm run dev /path/to/repo Alex/bugfix/bug3303 develop
 `);
+}
+
+/**
+ * Parse CLI options from arguments
+ */
+function parseOptions(args: string[]): {
+  format: 'json' | 'markdown' | 'summary' | 'pr-comments';
+  skipValidation: boolean;
+  verbose: boolean;
+} {
+  const options = {
+    format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
+    skipValidation: false,
+    verbose: false,
+  };
+
+  for (const arg of args) {
+    if (arg.startsWith('--format=')) {
+      const format = arg.split('=')[1];
+      if (
+        format === 'json' ||
+        format === 'markdown' ||
+        format === 'summary' ||
+        format === 'pr-comments'
+      ) {
+        options.format = format;
+      }
+    } else if (arg === '--skip-validation') {
+      options.skipValidation = true;
+    } else if (arg === '--verbose') {
+      options.verbose = true;
+    }
+  }
+
+  return options;
+}
+
+/**
+ * Run the review command
+ */
+async function runReviewCommand(
+  repoPath: string,
+  sourceBranch: string,
+  targetBranch: string,
+  options: ReturnType<typeof parseOptions>
+): Promise<void> {
+  console.log(`
+@argus/core - AI Code Review
+=================================
+Repository:    ${repoPath}
+Source Branch: ${sourceBranch}
+Target Branch: ${targetBranch}
+Format:        ${options.format}
+=================================
+`);
+
+  const report = await runReview({
+    repoPath,
+    sourceBranch,
+    targetBranch,
+    options: {
+      verbose: options.verbose,
+      skipValidation: options.skipValidation,
+    },
+  });
+
+  // Output formatted report
+  const formatted = formatReport(report, { format: options.format });
+  console.log(formatted);
 }
 
 /**
@@ -42,14 +128,34 @@ export async function main(): Promise<void> {
   // process.argv[2+] = user arguments
   const args = process.argv.slice(2);
 
-  // Check if we have exactly 3 arguments
-  if (args.length !== 3) {
+  // Check for minimum arguments
+  if (args.length < 3) {
     console.error('Error: Invalid number of arguments\n');
     printUsage();
     process.exit(1);
   }
 
-  const [repoPath, sourceBranch, targetBranch] = args;
+  // Check if first arg is a command
+  const firstArg = args[0];
+  let command = 'analyze';
+  let repoPath: string;
+  let sourceBranch: string;
+  let targetBranch: string;
+  let optionArgs: string[];
+
+  if (firstArg === 'analyze' || firstArg === 'review') {
+    command = firstArg;
+    repoPath = args[1] ?? '';
+    sourceBranch = args[2] ?? '';
+    targetBranch = args[3] ?? '';
+    optionArgs = args.slice(4);
+  } else {
+    // Legacy mode: no command specified, default to analyze
+    repoPath = args[0] ?? '';
+    sourceBranch = args[1] ?? '';
+    targetBranch = args[2] ?? '';
+    optionArgs = args.slice(3);
+  }
 
   // Validate arguments are not empty
   if (!repoPath || !sourceBranch || !targetBranch) {
@@ -59,6 +165,14 @@ export async function main(): Promise<void> {
   }
 
   try {
+    // Handle review command
+    if (command === 'review') {
+      const options = parseOptions(optionArgs);
+      await runReviewCommand(repoPath, sourceBranch, targetBranch, options);
+      return;
+    }
+
+    // Default: analyze command
     const remote = 'origin'; // Default remote
     console.log(`
 @argus/core - Git Diff Extraction
