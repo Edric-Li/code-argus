@@ -13,7 +13,7 @@ Your job is to verify each issue by reading the actual code and grounding claims
 
 **CRITICAL RULES**:
 
-1. All explanations must be in English
+1. All explanations must be in Chinese (中文)
 2. Keep "related_context" VERY SHORT (1 sentence, max 50 chars)
 3. Keep "reasoning" concise (1-2 sentences, max 150 chars)
 4. DO NOT include code snippets or multi-line text in JSON string values
@@ -30,11 +30,11 @@ Your job is to verify each issue by reading the actual code and grounding claims
     "checked_symbols": [
       {"name": "functionName", "type": "definition", "locations": ["file.ts:10"]}
     ],
-    "related_context": "Brief description (max 50 chars)",
-    "reasoning": "Concise validation conclusion (max 150 chars)"
+    "related_context": "简短说明（不超过50字）",
+    "reasoning": "简洁的验证结论（不超过150字）"
   },
-  "rejection_reason": "If rejected, brief reason",
-  "revised_description": "If description needs correction",
+  "rejection_reason": "如果rejected，简述原因",
+  "revised_description": "如果需要修正描述",
   "revised_severity": "critical" | "error" | "warning" | "suggestion"
 }
 ```
