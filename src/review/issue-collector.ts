@@ -7,7 +7,8 @@
  * 2. Real-time status updates
  */
 
-import type { RawIssue, ValidatedIssue, AgentType } from './types.js';
+import type { RawIssue, ValidatedIssue, AgentType, ValidationStrategyConfig } from './types.js';
+import { DEFAULT_VALIDATION_STRATEGIES } from './types.js';
 import { createValidator, type IssueValidator } from './validator.js';
 import { DEFAULT_VALIDATION_CONCURRENCY } from './constants.js';
 
@@ -43,6 +44,8 @@ export interface IssueCollectorOptions {
   repoPath: string;
   verbose?: boolean;
   skipValidation?: boolean;
+  /** Custom validation strategies per agent type */
+  validationStrategies?: Partial<Record<AgentType, ValidationStrategyConfig>>;
   /** Callback when a new issue is received (before validation) */
   onIssueReceived?: (issue: RawIssue) => void;
   /** Callback when an issue is validated */
@@ -68,22 +71,34 @@ export interface CollectorStats {
  */
 export class IssueCollector {
   private options: Required<
-    Omit<IssueCollectorOptions, 'onIssueReceived' | 'onIssueValidated' | 'onStatusUpdate'>
+    Omit<
+      IssueCollectorOptions,
+      'validationStrategies' | 'onIssueReceived' | 'onIssueValidated' | 'onStatusUpdate'
+    >
   > &
-    Pick<IssueCollectorOptions, 'onIssueReceived' | 'onIssueValidated' | 'onStatusUpdate'>;
+    Pick<
+      IssueCollectorOptions,
+      'validationStrategies' | 'onIssueReceived' | 'onIssueValidated' | 'onStatusUpdate'
+    >;
 
   private validator: IssueValidator;
+
+  // Validation strategies (merged with defaults)
+  private validationStrategies: Record<AgentType, ValidationStrategyConfig>;
 
   // Issue storage
   private rawIssues: Map<string, RawIssue> = new Map();
   private validatedIssues: Map<string, ValidatedIssue> = new Map();
 
-  // Validation queue
+  // Validation queue (for immediate validation)
   private validationQueue: Set<string> = new Set();
   private validationPromises: Map<string, Promise<ValidatedIssue>> = new Map();
   private pendingValidations: Array<() => Promise<void>> = [];
   private activeValidations = 0;
   private maxConcurrentValidations = DEFAULT_VALIDATION_CONCURRENCY;
+
+  // Batch buffers (for batch-on-agent-complete strategy)
+  private batchBuffers: Map<AgentType, RawIssue[]> = new Map();
 
   // Stats
   private stats: CollectorStats = {
@@ -103,6 +118,12 @@ export class IssueCollector {
       ...options,
     };
 
+    // Merge custom strategies with defaults
+    this.validationStrategies = {
+      ...DEFAULT_VALIDATION_STRATEGIES,
+      ...options.validationStrategies,
+    };
+
     this.validator = createValidator({
       repoPath: options.repoPath,
       verbose: options.verbose,
@@ -113,7 +134,9 @@ export class IssueCollector {
    * Report a new issue from an agent
    *
    * This is the main entry point called by agents via MCP tool.
-   * Validation runs async in the background.
+   * Validation strategy depends on the agent type:
+   * - 'immediate': Start validation right away (default for most agents)
+   * - 'batch-on-agent-complete': Buffer issues until agent completes, then batch validate
    */
   async reportIssue(report: IssueReport, sourceAgent: AgentType): Promise<ReportResult> {
     this.stats.totalReported++;
@@ -147,10 +170,8 @@ export class IssueCollector {
     // Notify about new issue received
     this.options.onIssueReceived?.(rawIssue);
 
-    // Start async validation (non-blocking)
-    if (!this.options.skipValidation) {
-      this.startValidation(rawIssue);
-    } else {
+    // Determine validation approach based on strategy
+    if (this.options.skipValidation) {
       // Skip validation, mark as validated immediately
       const validatedIssue: ValidatedIssue = {
         ...rawIssue,
@@ -166,6 +187,16 @@ export class IssueCollector {
       this.validatedIssues.set(issueId, validatedIssue);
       this.stats.validated++;
       this.options.onIssueValidated?.(validatedIssue);
+    } else {
+      const strategy = this.validationStrategies[sourceAgent];
+
+      if (strategy.strategy === 'batch-on-agent-complete') {
+        // Buffer issue for batch validation later
+        this.addToBatchBuffer(sourceAgent, rawIssue);
+      } else {
+        // Start async validation immediately (non-blocking)
+        this.startValidation(rawIssue);
+      }
     }
 
     this.options.onStatusUpdate?.(`已接收问题: ${report.title}`);
@@ -173,8 +204,53 @@ export class IssueCollector {
     return {
       status: 'accepted',
       issue_id: issueId,
-      message: '问题已接收，正在验证...',
+      message:
+        this.validationStrategies[sourceAgent].strategy === 'batch-on-agent-complete'
+          ? '问题已接收，等待批量验证...'
+          : '问题已接收，正在验证...',
     };
+  }
+
+  /**
+   * Add issue to batch buffer for later validation
+   */
+  private addToBatchBuffer(agent: AgentType, issue: RawIssue): void {
+    const buffer = this.batchBuffers.get(agent) || [];
+    buffer.push(issue);
+    this.batchBuffers.set(agent, buffer);
+    this.stats.validationPending++;
+
+    if (this.options.verbose) {
+      console.log(
+        `[Collector] Issue ${issue.id} added to batch buffer for ${agent} (buffer size: ${buffer.length})`
+      );
+    }
+  }
+
+  /**
+   * Flush batch buffer for a specific agent and start batch validation
+   *
+   * Call this when an agent completes to trigger batch validation for
+   * agents using 'batch-on-agent-complete' strategy.
+   */
+  async flushAgentIssues(agent: AgentType): Promise<void> {
+    const buffer = this.batchBuffers.get(agent);
+    if (!buffer || buffer.length === 0) {
+      if (this.options.verbose) {
+        console.log(`[Collector] No buffered issues to flush for ${agent}`);
+      }
+      return;
+    }
+
+    if (this.options.verbose) {
+      console.log(`[Collector] Flushing ${buffer.length} issues for ${agent} batch validation`);
+    }
+
+    // Clear buffer
+    this.batchBuffers.set(agent, []);
+
+    // Start batch validation
+    await this.startBatchValidation(buffer, agent);
   }
 
   /**
@@ -237,6 +313,84 @@ export class IssueCollector {
       const next = this.pendingValidations.shift()!;
       this.activeValidations++;
       next();
+    }
+  }
+
+  /**
+   * Start batch validation for multiple issues from the same agent
+   *
+   * This is more efficient for agents like style-reviewer where
+   * issues can be validated together in a single API call.
+   */
+  private async startBatchValidation(issues: RawIssue[], _agent: AgentType): Promise<void> {
+    if (issues.length === 0) return;
+
+    // Create promises for all issues
+    const resolvers: Map<string, (value: ValidatedIssue) => void> = new Map();
+
+    for (const issue of issues) {
+      this.validationQueue.add(issue.id);
+      const validationPromise = new Promise<ValidatedIssue>((resolve) => {
+        resolvers.set(issue.id, resolve);
+      });
+      this.validationPromises.set(issue.id, validationPromise);
+    }
+
+    // Run batch validation
+    try {
+      const result = await this.validator.validateBatch(issues, this.maxConcurrentValidations);
+      this.stats.tokensUsed += result.tokensUsed;
+
+      // Process results
+      for (const validatedIssue of result.issues) {
+        this.validatedIssues.set(validatedIssue.id, validatedIssue);
+        this.validationQueue.delete(validatedIssue.id);
+        this.stats.validationPending--;
+        this.stats.validated++;
+
+        if (this.options.verbose) {
+          console.log(
+            `[Collector] Issue ${validatedIssue.id} batch-validated: ${validatedIssue.validation_status}`
+          );
+        }
+
+        this.options.onIssueValidated?.(validatedIssue);
+
+        // Resolve the promise
+        const resolver = resolvers.get(validatedIssue.id);
+        if (resolver) {
+          resolver(validatedIssue);
+        }
+      }
+    } catch (error) {
+      console.error(`[Collector] Batch validation failed:`, error);
+
+      // Fallback: mark all as uncertain
+      for (const issue of issues) {
+        const fallbackIssue: ValidatedIssue = {
+          ...issue,
+          validation_status: 'uncertain',
+          grounding_evidence: {
+            checked_files: [],
+            checked_symbols: [],
+            related_context: '',
+            reasoning: `Batch validation error: ${error instanceof Error ? error.message : String(error)}`,
+          },
+          final_confidence: issue.confidence * 0.5,
+        };
+
+        this.validatedIssues.set(issue.id, fallbackIssue);
+        this.validationQueue.delete(issue.id);
+        this.stats.validationPending--;
+        this.stats.validated++;
+
+        this.options.onIssueValidated?.(fallbackIssue);
+
+        const resolver = resolvers.get(issue.id);
+        if (resolver) {
+          resolver(fallbackIssue);
+        }
+      }
     }
   }
 
@@ -327,6 +481,7 @@ export class IssueCollector {
     this.validationPromises.clear();
     this.pendingValidations = [];
     this.activeValidations = 0;
+    this.batchBuffers.clear();
     this.issueCounter = 0;
     this.stats = {
       totalReported: 0,

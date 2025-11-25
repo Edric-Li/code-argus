@@ -29,6 +29,24 @@ export type AgentType =
   | 'performance-reviewer'
   | 'validator';
 
+/** Validation strategy for different agent types */
+export type ValidationStrategy = 'immediate' | 'batch-on-agent-complete';
+
+/** Validation strategy configuration */
+export interface ValidationStrategyConfig {
+  /** Strategy type */
+  strategy: ValidationStrategy;
+}
+
+/** Default validation strategies by agent type */
+export const DEFAULT_VALIDATION_STRATEGIES: Record<AgentType, ValidationStrategyConfig> = {
+  'style-reviewer': { strategy: 'batch-on-agent-complete' },
+  'security-reviewer': { strategy: 'immediate' },
+  'logic-reviewer': { strategy: 'immediate' },
+  'performance-reviewer': { strategy: 'immediate' },
+  validator: { strategy: 'immediate' },
+};
+
 // ============================================================================
 // Issue Types
 // ============================================================================

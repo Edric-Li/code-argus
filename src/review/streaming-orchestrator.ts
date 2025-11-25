@@ -422,9 +422,17 @@ export class StreamingReviewOrchestrator {
           reviewRepoPath
         );
         const elapsed = Date.now() - startTime;
+
+        // Flush any buffered issues for this agent (for batch-on-agent-complete strategy)
+        await this.issueCollector!.flushAgentIssues(agentType as AgentType);
+
         return { agentType, result, elapsed, success: true as const };
       } catch (error) {
         const elapsed = Date.now() - startTime;
+
+        // Still flush buffered issues even on error
+        await this.issueCollector!.flushAgentIssues(agentType as AgentType);
+
         return { agentType, error, elapsed, success: false as const };
       }
     });

@@ -41,6 +41,8 @@ export type {
   RiskLevel,
   ChecklistResult,
   AgentType,
+  ValidationStrategy,
+  ValidationStrategyConfig,
   // Issue types
   RawIssue,
   SymbolLookup,
@@ -65,6 +67,9 @@ export type {
   OrchestratorOptions,
   OrchestratorInput,
 } from './types.js';
+
+// Validation strategies
+export { DEFAULT_VALIDATION_STRATEGIES } from './types.js';
 
 // Standards extraction
 export { extractStandards, standardsToPromptText, createStandards } from './standards/index.js';
