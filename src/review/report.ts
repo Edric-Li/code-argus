@@ -136,8 +136,6 @@ export interface ReportOptions {
   includeMetadata?: boolean;
   /** Include detailed evidence */
   includeEvidence?: boolean;
-  /** Include existing code issues in report (requires issues to have introduced_in_pr marked) */
-  includeExistingIssues?: boolean;
   /** Output language */
   language?: 'en' | 'zh';
 }
@@ -179,7 +177,6 @@ const DEFAULT_OPTIONS: Required<ReportOptions> = {
   includeChecklist: true,
   includeMetadata: true,
   includeEvidence: false,
-  includeExistingIssues: false,
   language: 'zh',
 };
 
@@ -368,114 +365,48 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
 
   // Issues by severity
   if (report.issues.length > 0) {
-    // Separate new and existing issues
-    const newIssues = report.issues.filter((i) => i.introduced_in_pr !== false);
-    const existingIssues = report.issues.filter((i) => i.introduced_in_pr === false);
+    lines.push(`## ${translate('Issues', lang)}`);
+    lines.push('');
 
-    // New issues introduced in this PR
-    if (newIssues.length > 0) {
-      lines.push(`## ${translate('Issues Introduced in This PR', lang)}`);
+    const bySeverity = groupBySeverity(report.issues);
+
+    // Critical issues
+    if (bySeverity.critical.length > 0) {
+      lines.push(`### 🔴 ${translate('Critical', lang)}`);
       lines.push('');
-
-      const bySeverity = groupBySeverity(newIssues);
-
-      // Critical issues
-      if (bySeverity.critical.length > 0) {
-        lines.push(`### 🔴 ${translate('Critical', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.critical) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
+      for (const issue of bySeverity.critical) {
+        lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
       }
-
-      // Errors
-      if (bySeverity.error.length > 0) {
-        lines.push(`### 🟠 ${translate('Errors', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.error) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
-
-      // Warnings
-      if (bySeverity.warning.length > 0) {
-        lines.push(`### 🟡 ${translate('Warnings', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.warning) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
-
-      // Suggestions
-      if (bySeverity.suggestion.length > 0) {
-        lines.push(`### 💡 ${translate('Suggestions', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.suggestion) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
+      lines.push('');
     }
 
-    // Pre-existing issues (if includeExistingIssues is enabled)
-    if (opts.includeExistingIssues && existingIssues.length > 0) {
-      lines.push(`## ${translate('Pre-existing Issues', lang)}`);
+    // Errors
+    if (bySeverity.error.length > 0) {
+      lines.push(`### 🟠 ${translate('Errors', lang)}`);
       lines.push('');
-      lines.push(
-        `> ℹ️ ${translate('These issues exist in the code but were not introduced by this PR.', lang)}`
-      );
+      for (const issue of bySeverity.error) {
+        lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+      }
       lines.push('');
-
-      const bySeverity = groupBySeverity(existingIssues);
-
-      // Critical issues
-      if (bySeverity.critical.length > 0) {
-        lines.push(`### 🔴 ${translate('Critical', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.critical) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
-
-      // Errors
-      if (bySeverity.error.length > 0) {
-        lines.push(`### 🟠 ${translate('Errors', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.error) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
-
-      // Warnings
-      if (bySeverity.warning.length > 0) {
-        lines.push(`### 🟡 ${translate('Warnings', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.warning) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
-
-      // Suggestions
-      if (bySeverity.suggestion.length > 0) {
-        lines.push(`### 💡 ${translate('Suggestions', lang)}`);
-        lines.push('');
-        for (const issue of bySeverity.suggestion) {
-          lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
-        }
-        lines.push('');
-      }
     }
 
-    if (newIssues.length === 0 && existingIssues.length === 0) {
-      lines.push(`## ${translate('Issues', lang)}`);
+    // Warnings
+    if (bySeverity.warning.length > 0) {
+      lines.push(`### 🟡 ${translate('Warnings', lang)}`);
       lines.push('');
-      lines.push(translate('No issues found.', lang));
+      for (const issue of bySeverity.warning) {
+        lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+      }
+      lines.push('');
+    }
+
+    // Suggestions
+    if (bySeverity.suggestion.length > 0) {
+      lines.push(`### 💡 ${translate('Suggestions', lang)}`);
+      lines.push('');
+      for (const issue of bySeverity.suggestion) {
+        lines.push(formatIssueMarkdown(issue, opts.includeEvidence, lang));
+      }
       lines.push('');
     }
   } else {

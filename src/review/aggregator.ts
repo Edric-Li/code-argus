@@ -1,7 +1,8 @@
 /**
  * Issue Aggregator
  *
- * Handles deduplication, filtering, and sorting of validated issues.
+ * Handles filtering and sorting of validated issues.
+ * Note: Deduplication is now handled by the LLM-based deduplicator.
  */
 
 import type {
@@ -38,12 +39,8 @@ export interface AggregationResult {
   stats: {
     /** Total issues before aggregation */
     total_input: number;
-    /** Issues after deduplication */
-    after_dedup: number;
     /** Issues after filtering */
     after_filter: number;
-    /** Duplicates removed */
-    duplicates_removed: number;
     /** Rejected issues filtered */
     rejected_filtered: number;
   };
@@ -68,6 +65,7 @@ const SEVERITY_ORDER: Record<Severity, number> = {
 
 /**
  * Aggregate and process validated issues
+ * Note: Issues are already deduplicated by the LLM-based deduplicator
  */
 export function aggregateIssues(
   issues: ValidatedIssue[],
@@ -91,15 +89,13 @@ export function aggregateIssues(
     filtered = filtered.filter((issue) => issue.final_confidence >= opts.minConfidence);
   }
 
-  // Step 3: Deduplicate
-  const deduplicated = deduplicateIssues(filtered);
-
-  // Step 4: Sort
-  return sortIssues(deduplicated, opts.sortBy);
+  // Step 3: Sort
+  return sortIssues(filtered, opts.sortBy);
 }
 
 /**
  * Full aggregation with statistics
+ * Note: Issues are already deduplicated by the LLM-based deduplicator
  */
 export function aggregate(
   issues: ValidatedIssue[],
@@ -129,14 +125,10 @@ export function aggregate(
 
   const afterFilter = filtered.length;
 
-  // Step 3: Deduplicate
-  const deduplicated = deduplicateIssues(filtered);
-  const afterDedup = deduplicated.length;
+  // Step 3: Sort
+  const sorted = sortIssues(filtered, opts.sortBy);
 
-  // Step 4: Sort
-  const sorted = sortIssues(deduplicated, opts.sortBy);
-
-  // Step 5: Aggregate checklists
+  // Step 4: Aggregate checklists
   const aggregatedChecklist = aggregateChecklists(checklists);
 
   return {
@@ -144,48 +136,10 @@ export function aggregate(
     checklist: aggregatedChecklist,
     stats: {
       total_input: totalInput,
-      after_dedup: afterDedup,
       after_filter: afterFilter,
-      duplicates_removed: afterFilter - afterDedup,
       rejected_filtered: opts.includeRejected ? 0 : rejectedCount,
     },
   };
-}
-
-/**
- * Deduplicate issues by file + line range + similar content
- */
-function deduplicateIssues(issues: ValidatedIssue[]): ValidatedIssue[] {
-  const seen = new Map<string, ValidatedIssue>();
-
-  for (const issue of issues) {
-    // Primary key: file + line range
-    const locationKey = `${issue.file}:${issue.line_start}-${issue.line_end}`;
-
-    // Check for existing issue at same location
-    const existing = seen.get(locationKey);
-
-    if (!existing) {
-      seen.set(locationKey, issue);
-      continue;
-    }
-
-    // If same location, keep the one with higher confidence
-    if (issue.final_confidence > existing.final_confidence) {
-      seen.set(locationKey, issue);
-    } else if (issue.final_confidence === existing.final_confidence) {
-      // Same confidence: prefer confirmed over pending/uncertain
-      if (issue.validation_status === 'confirmed' && existing.validation_status !== 'confirmed') {
-        seen.set(locationKey, issue);
-      }
-      // Same confidence, same status: prefer higher severity
-      else if (SEVERITY_ORDER[issue.severity] < SEVERITY_ORDER[existing.severity]) {
-        seen.set(locationKey, issue);
-      }
-    }
-  }
-
-  return Array.from(seen.values());
 }
 
 /**

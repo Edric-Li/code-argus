@@ -9,6 +9,27 @@ import type { DiffOptions, DiffResult } from './type.js';
 import { GitError } from './type.js';
 
 /**
+ * Fetch remote refs
+ *
+ * @param repoPath - Path to the git repository
+ * @param remote - Remote name (default: 'origin')
+ * @returns true if fetch succeeded, false otherwise
+ */
+export function fetchRemote(repoPath: string, remote: string = 'origin'): boolean {
+  try {
+    execSync(`git fetch ${remote}`, {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    return true;
+  } catch {
+    console.warn(`Warning: Failed to fetch from ${remote}, using existing refs`);
+    return false;
+  }
+}
+
+/**
  * Get git diff between two remote branches using three-dot syntax
  *
  * Uses `git diff origin/targetBranch...origin/sourceBranch` to find the merge base
@@ -45,7 +66,7 @@ export function getDiff(
  * @throws {GitError} If git command fails or repository is invalid
  */
 export function getDiffWithOptions(options: DiffOptions): DiffResult {
-  const { repoPath, sourceBranch, targetBranch, remote = 'origin' } = options;
+  const { repoPath, sourceBranch, targetBranch, remote = 'origin', skipFetch = false } = options;
 
   // Validate repository path
   const absolutePath = resolve(repoPath);
@@ -66,6 +87,11 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
       'NOT_GIT_REPO',
       error instanceof Error ? error.message : String(error)
     );
+  }
+
+  // Fetch latest remote refs (unless skipped)
+  if (!skipFetch) {
+    fetchRemote(absolutePath, remote);
   }
 
   // Build remote branch references

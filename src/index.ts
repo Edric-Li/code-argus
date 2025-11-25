@@ -39,7 +39,8 @@ Options (review command):
                        - zh: Chinese (中文)
                        - en: English
   --skip-validation    Skip issue validation (faster but less accurate)
-  --include-existing   Include pre-existing issues (not introduced in this PR)
+  --monitor            Enable real-time status monitoring UI
+  --monitor-port=<num> Status monitor port (default: 3456)
   --verbose            Enable verbose output
 
 Note:
@@ -48,8 +49,9 @@ Note:
 
 Examples:
   tsx src/index.ts analyze /path/to/repo feature/new-feature develop
-  tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json
-  npm run dev /path/to/repo Alex/bugfix/bug3303 develop
+  tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json --monitor
+  npx tsx src/index.ts review /path/to/repo Alex/bugfix/bug3303 develop --monitor
+  npm run dev -- review /path/to/repo Alex/bugfix/bug3303 develop --monitor
 `);
 }
 
@@ -60,14 +62,16 @@ function parseOptions(args: string[]): {
   format: 'json' | 'markdown' | 'summary' | 'pr-comments';
   language: 'en' | 'zh';
   skipValidation: boolean;
-  includeExisting: boolean;
+  monitor: boolean;
+  monitorPort: number;
   verbose: boolean;
 } {
   const options = {
     format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
     language: 'zh' as 'en' | 'zh',
     skipValidation: false,
-    includeExisting: false,
+    monitor: false,
+    monitorPort: 3456,
     verbose: false,
   };
 
@@ -89,8 +93,13 @@ function parseOptions(args: string[]): {
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
-    } else if (arg === '--include-existing') {
-      options.includeExisting = true;
+    } else if (arg === '--monitor') {
+      options.monitor = true;
+    } else if (arg.startsWith('--monitor-port=')) {
+      const port = parseInt(arg.split('=')[1] || '3456', 10);
+      if (!isNaN(port) && port > 0 && port < 65536) {
+        options.monitorPort = port;
+      }
     } else if (arg === '--verbose') {
       options.verbose = true;
     }
@@ -125,14 +134,14 @@ Format:        ${options.format}
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
-      includeExistingIssues: options.includeExisting,
+      monitor: options.monitor,
+      monitorPort: options.monitorPort,
     },
   });
 
   // Output formatted report
   const formatted = formatReport(report, {
     format: options.format,
-    includeExistingIssues: options.includeExisting,
     language: options.language,
   });
   console.log(formatted);

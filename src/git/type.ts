@@ -30,6 +30,8 @@ export interface DiffOptions {
   targetBranch: string;
   /** Remote name to use (defaults to 'origin') */
   remote?: string;
+  /** Skip git fetch (useful when fetch was already done) */
+  skipFetch?: boolean;
 }
 
 /**

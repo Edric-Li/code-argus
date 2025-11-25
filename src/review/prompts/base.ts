@@ -128,15 +128,27 @@ export const TOOL_USAGE_INSTRUCTIONS = `
 ## Tool Usage Guidelines
 
 You have access to the following tools:
+- **mcp__sequential-thinking__sequentialthinking**: Use this FIRST to think through the analysis systematically
 - **Read**: Read file contents. Use this to understand the full context, not just the diff.
 - **Grep**: Search for patterns in the codebase. Use this to find related code.
 - **Glob**: Find files matching a pattern. Use this to locate relevant files.
 - **Bash**: Run shell commands. Use this sparingly, mainly for running lint tools.
 
 **Important**:
-1. Always use Read to get full file context before making judgments about issues.
-2. Don't assume - verify by reading the actual code.
-3. Search for related code (implementations, tests, usages) when needed.
+1. **ALWAYS start with sequential thinking**: Before analyzing any code, use the sequential-thinking tool to:
+   - Break down what you need to analyze
+   - Form hypotheses about potential issues
+   - Plan your investigation strategy
+   - Reason through edge cases
+2. Then use Read to get full file context and verify your hypotheses
+3. Don't assume - verify by reading the actual code
+4. Search for related code (implementations, tests, usages) when needed
+
+**Example workflow**:
+1. Use sequential-thinking to analyze the diff and form hypotheses
+2. Use Read to examine the actual files
+3. Use Grep/Glob to find related code if needed
+4. Output your findings as JSON
 `;
 
 /**
@@ -234,9 +246,10 @@ export function buildBaseSystemPrompt(agentRole: string): string {
 Your task is to analyze code changes and identify issues within your specialty area.
 
 **CRITICAL REQUIREMENTS**:
-1. ONLY review changed code (lines marked with + or -)
-2. NEVER review unchanged existing code (context lines)
-3. All descriptions and suggestions MUST be in Chinese
+1. **USE SEQUENTIAL THINKING FIRST**: Start every analysis by using the mcp__sequential-thinking__sequentialthinking tool to think through the problem systematically
+2. ONLY review changed code (lines marked with + or -)
+3. NEVER review unchanged existing code (context lines)
+4. All descriptions and suggestions MUST be in Chinese
 
 ${TOOL_USAGE_INSTRUCTIONS}
 

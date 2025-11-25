@@ -339,6 +339,12 @@ export interface OrchestratorOptions {
   agents?: AgentType[];
   /** Skip validation (not recommended) */
   skipValidation?: boolean;
+  /** Enable status monitoring UI */
+  monitor?: boolean;
+  /** Status monitor port (default: 3456) */
+  monitorPort?: number;
+  /** Delay in ms to keep monitor server alive after completion (default: 5000, 0 to disable) */
+  monitorStopDelay?: number;
 }
 
 /**

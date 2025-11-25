@@ -6,6 +6,7 @@
 import { execSync } from 'child_process';
 import { GitError } from './type.js';
 import type { RawCommit } from '../intent/types.js';
+import { fetchRemote } from './diff.js';
 
 /**
  * Field separator for git log output
@@ -15,20 +16,37 @@ const FIELD_SEP = '§§§';
 const COMMIT_SEP = '¶¶¶';
 
 /**
+ * Options for getPRCommits
+ */
+export interface GetPRCommitsOptions {
+  /** Skip git fetch (useful when fetch was already done) */
+  skipFetch?: boolean;
+}
+
+/**
  * Get commits for a PR (commits in source branch but not in target branch)
  *
  * @param repoPath - Path to the git repository
  * @param sourceBranch - Source branch name (PR branch)
  * @param targetBranch - Target branch name (base branch)
  * @param remote - Remote name (default: 'origin')
+ * @param options - Additional options
  * @returns Array of commits in the PR
  */
 export function getPRCommits(
   repoPath: string,
   sourceBranch: string,
   targetBranch: string,
-  remote: string = 'origin'
+  remote: string = 'origin',
+  options: GetPRCommitsOptions = {}
 ): RawCommit[] {
+  const { skipFetch = false } = options;
+
+  // Fetch latest remote refs (unless skipped)
+  if (!skipFetch) {
+    fetchRemote(repoPath, remote);
+  }
+
   const format = [
     '%H', // hash
     '%s', // subject (first line)

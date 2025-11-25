@@ -83,3 +83,19 @@ export {
   type SpecialistContext,
   type ValidatorContext,
 } from './prompts/index.js';
+
+// Validator
+export {
+  IssueValidator,
+  createValidator,
+  type ValidatorOptions,
+  type ValidationResult as SingleValidationResult,
+} from './validator.js';
+
+// Deduplicator
+export {
+  IssueDeduplicator,
+  createDeduplicator,
+  type DeduplicatorOptions,
+  type DeduplicationResult,
+} from './deduplicator.js';

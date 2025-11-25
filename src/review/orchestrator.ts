@@ -21,11 +21,14 @@ import { buildBaseSystemPrompt, parseAgentResponse } from './prompts/index.js';
 import { buildSpecialistPrompt, standardsToText } from './prompts/specialist.js';
 import { aggregate } from './aggregator.js';
 import { calculateMetrics, generateReport } from './report.js';
-import { getDiffWithOptions } from '../git/diff.js';
+import { getDiffWithOptions, fetchRemote } from '../git/diff.js';
 import { parseDiff } from '../git/parser.js';
 import { DiffAnalyzer } from '../analyzer/diff-analyzer.js';
 import { analyzeIntent } from '../intent/intent-analyzer.js';
 import { getPRCommits } from '../git/commits.js';
+import { StatusServer } from '../monitor/status-server.js';
+import { createValidator } from './validator.js';
+import { createDeduplicator } from './deduplicator.js';
 
 /**
  * Default orchestrator options
@@ -35,7 +38,9 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
-  includeExistingIssues: false,
+  monitor: false,
+  monitorPort: 3456,
+  monitorStopDelay: 5000,
 };
 
 /**
@@ -45,6 +50,7 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
  */
 export class ReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
+  private statusServer?: StatusServer;
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -57,95 +63,118 @@ export class ReviewOrchestrator {
     const startTime = Date.now();
     let tokensUsed = 0;
 
-    // Phase 0: Build review context
-    if (this.options.verbose) {
-      console.log('[Orchestrator] Building review context...');
+    // Start status server if monitoring is enabled
+    if (this.options.monitor) {
+      this.statusServer = new StatusServer(this.options.monitorPort);
+      await this.statusServer.start();
     }
 
-    const context = await this.buildContext(input);
-
-    // Phase 1: Run specialist agents in parallel
-    if (this.options.verbose) {
-      console.log('[Orchestrator] Running specialist agents...');
-    }
-
-    const agentResults = await this.runSpecialistAgents(context);
-    tokensUsed += agentResults.reduce((sum, r) => sum + r.tokens_used, 0);
-
-    // Collect all raw issues
-    const rawIssues = agentResults.flatMap((r) => r.issues);
-    const checklists = agentResults.flatMap((r) => r.checklist);
-
-    if (this.options.verbose) {
-      console.log(`[Orchestrator] Found ${rawIssues.length} potential issues`);
-    }
-
-    // Phase 2: Validate all issues (unless skipped)
-    let validatedIssues: ValidatedIssue[];
-
-    if (this.options.skipValidation) {
-      // Convert raw issues to validated without actual validation
-      validatedIssues = rawIssues.map((issue) => ({
-        ...issue,
-        validation_status: 'pending' as const,
-        grounding_evidence: {
-          checked_files: [],
-          checked_symbols: [],
-          related_context: '',
-          reasoning: 'Validation skipped',
-        },
-        final_confidence: issue.confidence,
-      }));
-    } else {
+    try {
+      // Phase 0: Build review context
       if (this.options.verbose) {
-        console.log('[Orchestrator] Validating issues...');
+        console.log('[Orchestrator] Building review context...');
+      }
+      this.sendStatus({
+        type: 'phase',
+        phase: 'Context Building',
+        message: '正在构建审查上下文...',
+      });
+
+      const context = await this.buildContext(input);
+
+      // Phase 1: Run specialist agents with streaming validation and deduplication
+      if (this.options.verbose) {
+        console.log('[Orchestrator] Running specialist agents with streaming validation...');
+      }
+      this.sendStatus({
+        type: 'phase',
+        phase: 'Agent Execution & Validation',
+        message: '正在运行专业审查 Agents 并实时验证...',
+      });
+
+      const { validatedIssues, checklists, tokens_used } =
+        await this.runAgentsWithStreamingValidation(context);
+      tokensUsed += tokens_used;
+
+      if (this.options.verbose) {
+        console.log(`[Orchestrator] Total validated issues: ${validatedIssues.length}`);
       }
 
-      const validationResult = await this.validateIssues(rawIssues, context);
-      validatedIssues = validationResult.issues;
-      tokensUsed += validationResult.tokens_used;
-    }
+      // Phase 2: Aggregate results
+      if (this.options.verbose) {
+        console.log('[Orchestrator] Aggregating results...');
+      }
+      this.sendStatus({
+        type: 'phase',
+        phase: 'Aggregation',
+        message: '正在聚合结果...',
+      });
 
-    // Phase 3: Aggregate results
-    if (this.options.verbose) {
-      console.log('[Orchestrator] Aggregating results...');
-    }
+      const aggregationResult = aggregate(validatedIssues, checklists);
+      const aggregatedIssues = aggregationResult.issues;
+      const aggregatedChecklist = aggregationResult.checklist;
 
-    const aggregationResult = aggregate(validatedIssues, checklists, {
-      diffFiles: context.diffFiles,
-      onlyChangedLines: !this.options.includeExistingIssues, // Filter to only show issues in changed lines unless includeExistingIssues is true
-    });
-    const aggregatedIssues = aggregationResult.issues;
-    const aggregatedChecklist = aggregationResult.checklist;
+      if (this.options.verbose) {
+        console.log(
+          `[Orchestrator] Aggregation: filtered to ${aggregationResult.stats.after_filter} issues`
+        );
+      }
 
-    if (this.options.verbose) {
-      console.log(
-        `[Orchestrator] Aggregation: ${aggregationResult.stats.duplicates_removed} duplicates removed, ${aggregationResult.stats.existing_code_filtered} existing code issues filtered`
+      // Phase 4: Generate report
+      this.sendStatus({
+        type: 'phase',
+        phase: 'Report Generation',
+        message: '正在生成报告...',
+      });
+
+      const metrics = calculateMetrics(validatedIssues, aggregatedIssues);
+      const metadata = {
+        review_time_ms: Date.now() - startTime,
+        tokens_used: tokensUsed,
+        agents_used: this.options.agents,
+      };
+
+      const report = generateReport(
+        aggregatedIssues,
+        aggregatedChecklist,
+        metrics,
+        context,
+        metadata,
+        'zh' // Language will be set when formatting the report
       );
+
+      if (this.options.verbose) {
+        console.log(`[Orchestrator] Review completed in ${report.metadata.review_time_ms}ms`);
+      }
+
+      this.sendStatus({
+        type: 'complete',
+        message: `审查完成! 发现 ${aggregatedIssues.length} 个问题`,
+        details: {
+          issues: aggregatedIssues.length,
+          time_ms: report.metadata.review_time_ms,
+          tokens_used: tokensUsed,
+        },
+      });
+
+      return report;
+    } catch (error) {
+      this.sendStatus({
+        type: 'error',
+        message: `审查失败: ${error instanceof Error ? error.message : String(error)}`,
+      });
+      throw error;
+    } finally {
+      // Stop status server after review
+      if (this.statusServer) {
+        if (this.options.monitorStopDelay > 0) {
+          await new Promise((resolve) =>
+            globalThis.setTimeout(resolve, this.options.monitorStopDelay)
+          );
+        }
+        await this.statusServer.stop();
+      }
     }
-
-    // Phase 4: Generate report
-    const metrics = calculateMetrics(rawIssues, aggregatedIssues);
-    const metadata = {
-      review_time_ms: Date.now() - startTime,
-      tokens_used: tokensUsed,
-      agents_used: this.options.agents,
-    };
-
-    const report = generateReport(
-      aggregatedIssues,
-      aggregatedChecklist,
-      metrics,
-      context,
-      metadata,
-      'zh' // Language will be set when formatting the report
-    );
-
-    if (this.options.verbose) {
-      console.log(`[Orchestrator] Review completed in ${report.metadata.review_time_ms}ms`);
-    }
-
-    return report;
   }
 
   /**
@@ -153,12 +182,20 @@ export class ReviewOrchestrator {
    */
   private async buildContext(input: OrchestratorInput): Promise<ReviewContext> {
     const { sourceBranch, targetBranch, repoPath } = input;
+    const remote = 'origin';
 
-    // Get diff
+    // Fetch remote refs once at the beginning
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Fetching remote refs...');
+    }
+    fetchRemote(repoPath, remote);
+
+    // Get diff (skip fetch since we already did it)
     const diffResult = getDiffWithOptions({
       sourceBranch,
       targetBranch,
       repoPath,
+      skipFetch: true,
     });
 
     // Parse diff
@@ -168,8 +205,8 @@ export class ReviewOrchestrator {
     const analyzer = new DiffAnalyzer();
     const analysisResult = await analyzer.analyze(diffFiles);
 
-    // Get commits
-    const commits = getPRCommits(repoPath, sourceBranch, targetBranch);
+    // Get commits (skip fetch since we already did it)
+    const commits = getPRCommits(repoPath, sourceBranch, targetBranch, remote, { skipFetch: true });
 
     // Analyze intent
     const intent = await analyzeIntent(commits, analysisResult);
@@ -183,16 +220,37 @@ export class ReviewOrchestrator {
       intent,
       fileAnalyses: analysisResult.changes,
       standards,
-      diffFiles,
     };
   }
 
   /**
-   * Run specialist agents in parallel using Claude Agent SDK
+   * Run specialist agents with streaming validation and deduplication
+   *
+   * Flow:
+   * 1. Run all agents in parallel
+   * 2. For each agent that completes:
+   *    a. Validate its issues (parallel validation with concurrency limit)
+   *    b. Deduplicate against already validated issues
+   * 3. After all agents complete, do final global deduplication
    */
-  private async runSpecialistAgents(context: ReviewContext): Promise<AgentResult[]> {
-    // Build specialist context
+  private async runAgentsWithStreamingValidation(context: ReviewContext): Promise<{
+    validatedIssues: ValidatedIssue[];
+    checklists: ChecklistItem[];
+    tokens_used: number;
+  }> {
     const standardsText = standardsToText(context.standards);
+    let totalTokens = 0;
+    const allValidatedIssues: ValidatedIssue[] = [];
+    const allChecklists: ChecklistItem[] = [];
+
+    // Create validator and deduplicator
+    const validator = createValidator({
+      repoPath: context.repoPath,
+      verbose: this.options.verbose,
+    });
+    const deduplicator = createDeduplicator({
+      verbose: this.options.verbose,
+    });
 
     // Run all agents in parallel
     const agentPromises = this.options.agents.map((agentType) =>
@@ -201,24 +259,154 @@ export class ReviewOrchestrator {
 
     const results = await Promise.allSettled(agentPromises);
 
-    // Process results
-    return results.map((result, index) => {
-      const agentType = this.options.agents[index] as AgentType;
+    // Process each agent's results sequentially (to maintain order and allow deduplication)
+    for (let i = 0; i < results.length; i++) {
+      const result = results[i];
+      if (!result) continue;
 
+      const agentType = this.options.agents[i] as AgentType;
+
+      let agentResult: AgentResult;
       if (result.status === 'fulfilled') {
-        return result.value;
+        agentResult = result.value;
       } else {
         if (this.options.verbose) {
           console.error(`[Orchestrator] Agent ${agentType} failed:`, result.reason);
         }
-        return {
+        agentResult = {
           agent: agentType,
-          issues: [] as RawIssue[],
-          checklist: [] as ChecklistItem[],
+          issues: [],
+          checklist: [],
           tokens_used: 0,
         };
       }
-    });
+
+      totalTokens += agentResult.tokens_used;
+      allChecklists.push(...agentResult.checklist);
+
+      // Skip if no issues found
+      if (agentResult.issues.length === 0) {
+        if (this.options.verbose) {
+          console.log(`[Orchestrator] Agent ${agentType}: no issues found`);
+        }
+        continue;
+      }
+
+      if (this.options.verbose) {
+        console.log(
+          `[Orchestrator] Agent ${agentType}: ${agentResult.issues.length} issues, starting validation...`
+        );
+      }
+
+      // Step 1: Validate issues from this agent (skip if validation disabled)
+      let validatedForThisAgent: ValidatedIssue[];
+
+      if (this.options.skipValidation) {
+        validatedForThisAgent = agentResult.issues.map((issue) => ({
+          ...issue,
+          validation_status: 'pending' as const,
+          grounding_evidence: {
+            checked_files: [],
+            checked_symbols: [],
+            related_context: '',
+            reasoning: 'Validation skipped',
+          },
+          final_confidence: issue.confidence,
+        }));
+      } else {
+        this.sendStatus({
+          type: 'progress',
+          message: `验证 ${agentType} 发现的 ${agentResult.issues.length} 个问题...`,
+          details: { agent: agentType, issues: agentResult.issues.length },
+        });
+
+        const validationResult = await validator.validateBatch(agentResult.issues, 3);
+        validatedForThisAgent = validationResult.issues;
+        totalTokens += validationResult.tokensUsed;
+
+        if (this.options.verbose) {
+          const confirmed = validatedForThisAgent.filter(
+            (i) => i.validation_status === 'confirmed'
+          ).length;
+          console.log(
+            `[Orchestrator] Agent ${agentType}: validated ${validatedForThisAgent.length} issues, ${confirmed} confirmed`
+          );
+        }
+      }
+
+      // Step 2: Deduplicate against already validated issues
+      if (allValidatedIssues.length > 0) {
+        if (this.options.verbose) {
+          console.log(
+            `[Orchestrator] Deduplicating ${validatedForThisAgent.length} new issues against ${allValidatedIssues.length} existing issues...`
+          );
+        }
+
+        this.sendStatus({
+          type: 'progress',
+          message: `去重 ${agentType} 的问题...`,
+          details: { agent: agentType },
+        });
+
+        // Combine and deduplicate
+        const combined = [...allValidatedIssues, ...validatedForThisAgent];
+        const deduplicationResult = await deduplicator.deduplicate(combined);
+        totalTokens += deduplicationResult.tokensUsed;
+
+        // Update the main list with deduplicated results
+        allValidatedIssues.length = 0;
+        allValidatedIssues.push(...deduplicationResult.uniqueIssues);
+
+        if (this.options.verbose) {
+          console.log(
+            `[Orchestrator] After deduplication: ${allValidatedIssues.length} unique issues (removed ${deduplicationResult.duplicateGroups.length} duplicate groups)`
+          );
+        }
+      } else {
+        // First agent, just add all validated issues
+        allValidatedIssues.push(...validatedForThisAgent);
+      }
+
+      this.sendStatus({
+        type: 'progress',
+        message: `${agentType} 完成，当前共 ${allValidatedIssues.length} 个唯一问题`,
+        details: { agent: agentType, total_issues: allValidatedIssues.length },
+      });
+    }
+
+    // Step 3: Final global deduplication
+    if (allValidatedIssues.length > 1) {
+      if (this.options.verbose) {
+        console.log('[Orchestrator] Performing final global deduplication...');
+      }
+
+      this.sendStatus({
+        type: 'phase',
+        phase: 'Final Deduplication',
+        message: '正在进行最终去重...',
+      });
+
+      const finalDedup = await deduplicator.deduplicate(allValidatedIssues);
+      totalTokens += finalDedup.tokensUsed;
+
+      if (this.options.verbose) {
+        console.log(
+          `[Orchestrator] Final deduplication: ${finalDedup.uniqueIssues.length} unique issues (removed ${finalDedup.duplicateGroups.length} duplicate groups)`
+        );
+      }
+
+      return {
+        validatedIssues: finalDedup.uniqueIssues,
+        checklists: allChecklists,
+        tokens_used: totalTokens,
+      };
+    }
+
+    return {
+      validatedIssues: allValidatedIssues,
+      checklists: allChecklists,
+      tokens_used: totalTokens,
+    };
   }
 
   /**
@@ -232,6 +420,13 @@ export class ReviewOrchestrator {
     if (this.options.verbose) {
       console.log(`[Orchestrator] Starting agent: ${agentType}`);
     }
+
+    this.sendStatus({
+      type: 'agent',
+      agent: agentType,
+      message: `${agentType} 开始分析...`,
+      details: { status: 'running' },
+    });
 
     // Build the prompt for this agent
     const userPrompt = buildSpecialistPrompt(agentType, {
@@ -298,6 +493,13 @@ export class ReviewOrchestrator {
       );
     }
 
+    this.sendStatus({
+      type: 'agent',
+      agent: agentType,
+      message: `${agentType} 完成，发现 ${parsed.issues.length} 个问题`,
+      details: { status: 'completed', issues: parsed.issues.length },
+    });
+
     return {
       agent: agentType,
       issues: parsed.issues,
@@ -307,204 +509,20 @@ export class ReviewOrchestrator {
   }
 
   /**
-   * Validate issues using the validator agent
+   * Send status update to the monitor
    */
-  private async validateIssues(
-    issues: RawIssue[],
-    context: ReviewContext
-  ): Promise<{ issues: ValidatedIssue[]; tokens_used: number }> {
-    if (issues.length === 0) {
-      return { issues: [], tokens_used: 0 };
+  private sendStatus(update: {
+    type: 'phase' | 'agent' | 'progress' | 'complete' | 'error';
+    phase?: string;
+    agent?: string;
+    message: string;
+    progress?: number;
+    total?: number;
+    details?: Record<string, unknown>;
+  }): void {
+    if (this.statusServer) {
+      this.statusServer.sendUpdate(update);
     }
-
-    if (this.options.verbose) {
-      console.log(`[Orchestrator] Validating ${issues.length} issues with validator agent`);
-    }
-
-    // Build validator prompt
-    const { buildValidatorPrompt } = await import('./prompts/specialist.js');
-    const userPrompt = buildValidatorPrompt({
-      issues: issues.map((i) => ({
-        id: i.id,
-        file: i.file,
-        line_start: i.line_start,
-        line_end: i.line_end,
-        category: i.category,
-        severity: i.severity,
-        title: i.title,
-        description: i.description,
-        code_snippet: i.code_snippet,
-        confidence: i.confidence,
-      })),
-      repoPath: context.repoPath,
-    });
-
-    // Build system prompt for validator
-    const systemPrompt = `You are an expert code reviewer specializing in validating issues discovered by other agents.
-Your job is to verify each issue by reading the actual code and grounding claims in evidence.
-
-**CRITICAL REQUIREMENTS**:
-1. All explanations in "related_context" and "reasoning" must be in Chinese
-
-For each issue:
-1. Read the actual file using the Read tool
-2. Verify the issue exists at the reported location
-3. Check for mitigating code that might handle the issue
-4. Make a decision: confirm, reject, or uncertain
-5. Write all explanations in Chinese
-
-Output your results as JSON with the validated_issues array.`;
-
-    let tokensUsed = 0;
-    let resultText = '';
-
-    // Run validator using Claude Agent SDK
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
-
-    const queryStream = query({
-      prompt: fullPrompt,
-      options: {
-        cwd: context.repoPath,
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-        maxTurns: 30, // Allow more turns for validation
-      },
-    });
-
-    // Consume the stream and collect the result
-    for await (const message of queryStream) {
-      if (message.type === 'result') {
-        const resultMessage = message as SDKResultMessage;
-        if (resultMessage.subtype === 'success') {
-          resultText = resultMessage.result;
-          tokensUsed = resultMessage.usage.input_tokens + resultMessage.usage.output_tokens;
-        } else {
-          if (this.options.verbose) {
-            console.error('[Orchestrator] Validator agent error:', resultMessage.subtype);
-          }
-        }
-      }
-    }
-
-    // Parse validation results
-    const validatedIssues = this.parseValidationResult(resultText, issues);
-
-    if (this.options.verbose) {
-      const confirmed = validatedIssues.filter((i) => i.validation_status === 'confirmed').length;
-      const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
-      console.log(
-        `[Orchestrator] Validation complete: ${confirmed} confirmed, ${rejected} rejected`
-      );
-    }
-
-    return { issues: validatedIssues, tokens_used: tokensUsed };
-  }
-
-  /**
-   * Parse validation result from validator agent
-   */
-  private parseValidationResult(resultText: string, originalIssues: RawIssue[]): ValidatedIssue[] {
-    // Create a map of original issues by ID
-    const issueMap = new Map<string, RawIssue>();
-    for (const issue of originalIssues) {
-      issueMap.set(issue.id, issue);
-    }
-
-    // Try to extract JSON from the result
-    const jsonMatch = resultText.match(/```(?:json)?\s*([\s\S]*?)```/);
-    const jsonStr = jsonMatch?.[1] ?? resultText;
-
-    try {
-      const parsed = JSON.parse(jsonStr.trim()) as {
-        validated_issues?: Array<{
-          original_id: string;
-          validation_status: 'confirmed' | 'rejected' | 'uncertain';
-          final_confidence: number;
-          grounding_evidence: {
-            checked_files: string[];
-            checked_symbols: string[];
-            related_context: string;
-            reasoning: string;
-          };
-        }>;
-      };
-
-      if (!parsed.validated_issues) {
-        // Return issues as pending if parsing fails
-        return this.markIssuesAsPending(originalIssues);
-      }
-
-      // Map validation results back to issues
-      const validatedIssues: ValidatedIssue[] = [];
-
-      for (const validation of parsed.validated_issues) {
-        const original = issueMap.get(validation.original_id);
-        if (original) {
-          // Convert string symbols to SymbolLookup objects if needed
-          const checkedSymbols = Array.isArray(validation.grounding_evidence.checked_symbols)
-            ? validation.grounding_evidence.checked_symbols.map((sym) =>
-                typeof sym === 'string'
-                  ? { name: sym, type: 'reference' as const, locations: [] }
-                  : sym
-              )
-            : [];
-
-          validatedIssues.push({
-            ...original,
-            validation_status: validation.validation_status,
-            grounding_evidence: {
-              ...validation.grounding_evidence,
-              checked_symbols: checkedSymbols,
-            },
-            final_confidence: validation.final_confidence,
-          });
-          issueMap.delete(validation.original_id);
-        }
-      }
-
-      // Add any issues that weren't validated as pending
-      for (const remaining of issueMap.values()) {
-        validatedIssues.push({
-          ...remaining,
-          validation_status: 'pending',
-          grounding_evidence: {
-            checked_files: [],
-            checked_symbols: [],
-            related_context: '',
-            reasoning: 'Issue was not validated',
-          },
-          final_confidence: remaining.confidence,
-        });
-      }
-
-      return validatedIssues;
-    } catch (error) {
-      console.error('[Orchestrator] Failed to parse validation result');
-      console.error(
-        '[Orchestrator] Error details:',
-        error instanceof Error ? error.message : String(error)
-      );
-      console.error('[Orchestrator] Result text length:', resultText.length);
-      console.error('[Orchestrator] First 500 chars:', resultText.substring(0, 500));
-      return this.markIssuesAsPending(originalIssues);
-    }
-  }
-
-  /**
-   * Mark all issues as pending (fallback when validation fails)
-   */
-  private markIssuesAsPending(issues: RawIssue[]): ValidatedIssue[] {
-    return issues.map((issue) => ({
-      ...issue,
-      validation_status: 'pending' as const,
-      grounding_evidence: {
-        checked_files: [],
-        checked_symbols: [],
-        related_context: '',
-        reasoning: 'Validation failed or skipped',
-      },
-      final_confidence: issue.confidence,
-    }));
   }
 }
 
