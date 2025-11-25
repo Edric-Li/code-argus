@@ -3,8 +3,9 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { DiffOptions, DiffResult } from './type.js';
 import { GitError } from './type.js';
 
@@ -33,7 +34,7 @@ export function fetchRemote(repoPath: string, remote: string = 'origin'): boolea
  * Get git diff between two remote branches using three-dot syntax
  *
  * Uses `git diff origin/targetBranch...origin/sourceBranch` to find the merge base
- * and only compare changes from the source branch on remote.
+ * and show changes introduced in the source branch.
  *
  * @param repoPath - Path to the git repository
  * @param sourceBranch - Source branch name (will be prefixed with remote/)
@@ -99,7 +100,7 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
   const remoteTargetBranch = `${remote}/${targetBranch}`;
 
   // Execute three-dot diff: remote/targetBranch...remote/sourceBranch
-  // This finds the merge base and shows only changes from sourceBranch on remote
+  // This finds the merge base and shows only changes from sourceBranch
   try {
     const diff = execSync(`git diff ${remoteTargetBranch}...${remoteSourceBranch}`, {
       cwd: absolutePath,
@@ -121,5 +122,105 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
       'DIFF_FAILED',
       err.stderr || err.message
     );
+  }
+}
+
+// ============================================================================
+// Git Worktree Operations
+// ============================================================================
+
+/**
+ * Worktree info returned when creating a worktree
+ */
+export interface WorktreeInfo {
+  /** Path to the worktree directory */
+  worktreePath: string;
+  /** Original repository path */
+  originalRepoPath: string;
+  /** Branch/ref checked out in the worktree */
+  checkedOutRef: string;
+}
+
+/**
+ * Create a temporary worktree for reviewing a branch
+ *
+ * This creates a new worktree in a temp directory, allowing code review
+ * without affecting the main working directory.
+ *
+ * @param repoPath - Path to the git repository
+ * @param sourceBranch - Source branch to checkout in worktree
+ * @param remote - Remote name (default: 'origin')
+ * @returns Info about the created worktree
+ * @throws {GitError} If worktree creation fails
+ */
+export function createWorktreeForReview(
+  repoPath: string,
+  sourceBranch: string,
+  remote: string = 'origin'
+): WorktreeInfo {
+  const absolutePath = resolve(repoPath);
+
+  // Create temp directory for worktree
+  const worktreePath = mkdtempSync(join(tmpdir(), 'code-argus-review-'));
+
+  // The ref to checkout (remote branch)
+  const remoteRef = `${remote}/${sourceBranch}`;
+
+  try {
+    // Create worktree with detached HEAD at the remote ref
+    execSync(`git worktree add --detach "${worktreePath}" ${remoteRef}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+
+    return {
+      worktreePath,
+      originalRepoPath: absolutePath,
+      checkedOutRef: remoteRef,
+    };
+  } catch (error: unknown) {
+    // Clean up temp directory on failure
+    try {
+      rmSync(worktreePath, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to create worktree for ${remoteRef}`,
+      'WORKTREE_CREATE_FAILED',
+      err.stderr || err.message
+    );
+  }
+}
+
+/**
+ * Remove a worktree after review is complete
+ *
+ * @param worktreeInfo - Info from createWorktreeForReview
+ */
+export function removeWorktree(worktreeInfo: WorktreeInfo): void {
+  try {
+    // Remove the worktree from git's tracking
+    execSync(`git worktree remove --force "${worktreeInfo.worktreePath}"`, {
+      cwd: worktreeInfo.originalRepoPath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } catch {
+    // If git worktree remove fails, try manual cleanup
+    try {
+      rmSync(worktreeInfo.worktreePath, { recursive: true, force: true });
+      // Prune worktree references
+      execSync('git worktree prune', {
+        cwd: worktreeInfo.originalRepoPath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+    } catch {
+      console.warn(`Warning: Failed to clean up worktree at ${worktreeInfo.worktreePath}`);
+    }
   }
 }

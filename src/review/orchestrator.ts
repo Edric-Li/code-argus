@@ -4,7 +4,12 @@
  * Coordinates the multi-agent code review process using Claude Agent SDK.
  */
 
-import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type SDKResultMessage,
+  type SDKAssistantMessage,
+  type SDKToolProgressMessage,
+} from '@anthropic-ai/claude-agent-sdk';
 import type {
   ReviewContext,
   ReviewReport,
@@ -21,14 +26,29 @@ import { buildBaseSystemPrompt, parseAgentResponse } from './prompts/index.js';
 import { buildSpecialistPrompt, standardsToText } from './prompts/specialist.js';
 import { aggregate } from './aggregator.js';
 import { calculateMetrics, generateReport } from './report.js';
-import { getDiffWithOptions, fetchRemote } from '../git/diff.js';
+import {
+  getDiffWithOptions,
+  fetchRemote,
+  createWorktreeForReview,
+  removeWorktree,
+  type WorktreeInfo,
+} from '../git/diff.js';
 import { parseDiff } from '../git/parser.js';
-import { DiffAnalyzer } from '../analyzer/diff-analyzer.js';
-import { analyzeIntent } from '../intent/intent-analyzer.js';
-import { getPRCommits } from '../git/commits.js';
+import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { StatusServer } from '../monitor/status-server.js';
 import { createValidator } from './validator.js';
 import { createDeduplicator } from './deduplicator.js';
+import {
+  DEFAULT_AGENT_MAX_TURNS,
+  DEFAULT_AGENT_MODEL,
+  DEFAULT_AGENT_MAX_THINKING_TOKENS,
+  MIN_CONFIDENCE_FOR_VALIDATION,
+} from './constants.js';
+import {
+  createProgressPrinter,
+  nullProgressPrinter,
+  type IProgressPrinter,
+} from '../cli/progress.js';
 
 /**
  * Default orchestrator options
@@ -41,6 +61,7 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   monitor: false,
   monitorPort: 3456,
   monitorStopDelay: 5000,
+  showProgress: true,
 };
 
 /**
@@ -51,9 +72,11 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
 export class ReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
   private statusServer?: StatusServer;
+  private progress: IProgressPrinter;
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.progress = this.options.showProgress ? createProgressPrinter() : nullProgressPrinter;
   }
 
   /**
@@ -62,6 +85,7 @@ export class ReviewOrchestrator {
   async review(input: OrchestratorInput): Promise<ReviewReport> {
     const startTime = Date.now();
     let tokensUsed = 0;
+    let worktreeInfo: WorktreeInfo | null = null;
 
     // Start status server if monitoring is enabled
     if (this.options.monitor) {
@@ -70,7 +94,12 @@ export class ReviewOrchestrator {
     }
 
     try {
-      // Phase 0: Build review context
+      const totalPhases = this.options.skipValidation ? 4 : 5;
+      let currentPhase = 0;
+
+      // Phase 1: Build review context
+      currentPhase++;
+      this.progress.phase(currentPhase, totalPhases, '构建审查上下文...');
       if (this.options.verbose) {
         console.log('[Orchestrator] Building review context...');
       }
@@ -81,8 +110,31 @@ export class ReviewOrchestrator {
       });
 
       const context = await this.buildContext(input);
+      this.progress.success(`上下文构建完成 (${context.fileAnalyses.length} 个文件)`);
 
-      // Phase 1: Run specialist agents with streaming validation and deduplication
+      // Create worktree for review
+      this.progress.progress(`创建 worktree: ${input.sourceBranch}...`);
+      if (this.options.verbose) {
+        console.log(`[Orchestrator] Creating worktree for source branch: ${input.sourceBranch}`);
+      }
+      this.sendStatus({
+        type: 'phase',
+        phase: 'Worktree',
+        message: `正在创建 worktree: ${input.sourceBranch}...`,
+      });
+      worktreeInfo = createWorktreeForReview(input.repoPath, input.sourceBranch);
+      this.progress.success(`Worktree 已创建: ${worktreeInfo.worktreePath}`);
+      if (this.options.verbose) {
+        console.log(`[Orchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
+      }
+
+      // Phase 2: Run specialist agents
+      currentPhase++;
+      this.progress.phase(
+        currentPhase,
+        totalPhases,
+        `运行 ${this.options.agents.length} 个 Agents...`
+      );
       if (this.options.verbose) {
         console.log('[Orchestrator] Running specialist agents with streaming validation...');
       }
@@ -100,7 +152,9 @@ export class ReviewOrchestrator {
         console.log(`[Orchestrator] Total validated issues: ${validatedIssues.length}`);
       }
 
-      // Phase 2: Aggregate results
+      // Phase 3: Aggregate results
+      currentPhase++;
+      this.progress.phase(currentPhase, totalPhases, '聚合结果...');
       if (this.options.verbose) {
         console.log('[Orchestrator] Aggregating results...');
       }
@@ -114,6 +168,10 @@ export class ReviewOrchestrator {
       const aggregatedIssues = aggregationResult.issues;
       const aggregatedChecklist = aggregationResult.checklist;
 
+      this.progress.success(
+        `聚合完成: ${aggregationResult.stats.total_input} → ${aggregationResult.stats.after_filter} 个问题`
+      );
+
       if (this.options.verbose) {
         console.log(
           `[Orchestrator] Aggregation: filtered to ${aggregationResult.stats.after_filter} issues`
@@ -121,6 +179,8 @@ export class ReviewOrchestrator {
       }
 
       // Phase 4: Generate report
+      currentPhase++;
+      this.progress.phase(currentPhase, totalPhases, '生成报告...');
       this.sendStatus({
         type: 'phase',
         phase: 'Report Generation',
@@ -143,6 +203,8 @@ export class ReviewOrchestrator {
         'zh' // Language will be set when formatting the report
       );
 
+      this.progress.success('报告生成完成');
+
       if (this.options.verbose) {
         console.log(`[Orchestrator] Review completed in ${report.metadata.review_time_ms}ms`);
       }
@@ -157,6 +219,9 @@ export class ReviewOrchestrator {
         },
       });
 
+      // Final summary
+      this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
+
       return report;
     } catch (error) {
       this.sendStatus({
@@ -165,6 +230,25 @@ export class ReviewOrchestrator {
       });
       throw error;
     } finally {
+      // Clean up worktree
+      if (worktreeInfo) {
+        this.progress.progress('清理 worktree...');
+        if (this.options.verbose) {
+          console.log(`[Orchestrator] Removing worktree: ${worktreeInfo.worktreePath}`);
+        }
+        this.sendStatus({
+          type: 'phase',
+          phase: 'Cleanup',
+          message: '正在清理 worktree...',
+        });
+        try {
+          removeWorktree(worktreeInfo);
+          this.progress.success('Worktree 已清理');
+        } catch (cleanupError) {
+          console.error('[Orchestrator] Failed to clean up worktree:', cleanupError);
+        }
+      }
+
       // Stop status server after review
       if (this.statusServer) {
         if (this.options.monitorStopDelay > 0) {
@@ -179,59 +263,67 @@ export class ReviewOrchestrator {
 
   /**
    * Build the review context from input
+   *
+   * Optimized: DiffAnalyzer + Standards run in parallel
    */
   private async buildContext(input: OrchestratorInput): Promise<ReviewContext> {
     const { sourceBranch, targetBranch, repoPath } = input;
     const remote = 'origin';
 
-    // Fetch remote refs once at the beginning
+    // Step 1: Fetch remote refs
+    this.progress.progress('获取远程 refs...');
     if (this.options.verbose) {
       console.log('[Orchestrator] Fetching remote refs...');
     }
     fetchRemote(repoPath, remote);
+    this.progress.success('获取远程 refs 完成');
 
-    // Get diff (skip fetch since we already did it)
+    // Step 2: Get diff
+    this.progress.progress(`获取 diff: ${remote}/${targetBranch}...${remote}/${sourceBranch}`);
     const diffResult = getDiffWithOptions({
       sourceBranch,
       targetBranch,
       repoPath,
       skipFetch: true,
     });
+    const diffSizeKB = Math.round(diffResult.diff.length / 1024);
+    this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
 
-    // Parse diff
+    // Step 3: Parse diff
+    this.progress.progress('解析 diff...');
     const diffFiles = parseDiff(diffResult.diff);
+    this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
 
-    // Analyze diff semantically
-    const analyzer = new DiffAnalyzer();
-    const analysisResult = await analyzer.analyze(diffFiles);
+    // Step 4: Local diff analysis (fast, no LLM)
+    this.progress.progress('分析变更...');
+    const analyzer = new LocalDiffAnalyzer();
+    const analysisResult = analyzer.analyze(diffFiles);
+    this.progress.success(`分析完成 (${analysisResult.changes.length} 个变更)`);
 
-    // Get commits (skip fetch since we already did it)
-    const commits = getPRCommits(repoPath, sourceBranch, targetBranch, remote, { skipFetch: true });
-
-    // Analyze intent
-    const intent = await analyzeIntent(commits, analysisResult);
-
-    // Extract standards
+    // Step 5: Extract project standards
+    this.progress.progress('提取项目标准...');
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Extracting project standards...');
+    }
     const standards = await createStandards(repoPath);
+    this.progress.success('项目标准提取完成');
 
     return {
       repoPath,
       diff: diffResult,
-      intent,
       fileAnalyses: analysisResult.changes,
       standards,
     };
   }
 
   /**
-   * Run specialist agents with streaming validation and deduplication
+   * Run specialist agents with deduplication before validation
    *
-   * Flow:
+   * Optimized Flow:
    * 1. Run all agents in parallel
-   * 2. For each agent that completes:
-   *    a. Validate its issues (parallel validation with concurrency limit)
-   *    b. Deduplicate against already validated issues
-   * 3. After all agents complete, do final global deduplication
+   * 2. Collect all raw issues from all agents
+   * 3. Deduplicate all issues once (before validation)
+   * 4. Validate only unique issues (saves validation calls on duplicates)
    */
   private async runAgentsWithStreamingValidation(context: ReviewContext): Promise<{
     validatedIssues: ValidatedIssue[];
@@ -240,170 +332,256 @@ export class ReviewOrchestrator {
   }> {
     const standardsText = standardsToText(context.standards);
     let totalTokens = 0;
-    const allValidatedIssues: ValidatedIssue[] = [];
+    const allRawIssues: RawIssue[] = [];
     const allChecklists: ChecklistItem[] = [];
 
-    // Create validator and deduplicator
-    const validator = createValidator({
-      repoPath: context.repoPath,
-      verbose: this.options.verbose,
-    });
-    const deduplicator = createDeduplicator({
-      verbose: this.options.verbose,
-    });
-
-    // Run all agents in parallel
-    const agentPromises = this.options.agents.map((agentType) =>
-      this.runSingleAgent(agentType as AgentType, context, standardsText)
-    );
-
-    const results = await Promise.allSettled(agentPromises);
-
-    // Process each agent's results sequentially (to maintain order and allow deduplication)
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      if (!result) continue;
-
-      const agentType = this.options.agents[i] as AgentType;
-
-      let agentResult: AgentResult;
-      if (result.status === 'fulfilled') {
-        agentResult = result.value;
-      } else {
-        if (this.options.verbose) {
-          console.error(`[Orchestrator] Agent ${agentType} failed:`, result.reason);
-        }
-        agentResult = {
-          agent: agentType,
-          issues: [],
-          checklist: [],
-          tokens_used: 0,
-        };
-      }
-
-      totalTokens += agentResult.tokens_used;
-      allChecklists.push(...agentResult.checklist);
-
-      // Skip if no issues found
-      if (agentResult.issues.length === 0) {
-        if (this.options.verbose) {
-          console.log(`[Orchestrator] Agent ${agentType}: no issues found`);
-        }
-        continue;
-      }
-
-      if (this.options.verbose) {
-        console.log(
-          `[Orchestrator] Agent ${agentType}: ${agentResult.issues.length} issues, starting validation...`
-        );
-      }
-
-      // Step 1: Validate issues from this agent (skip if validation disabled)
-      let validatedForThisAgent: ValidatedIssue[];
-
-      if (this.options.skipValidation) {
-        validatedForThisAgent = agentResult.issues.map((issue) => ({
-          ...issue,
-          validation_status: 'pending' as const,
-          grounding_evidence: {
-            checked_files: [],
-            checked_symbols: [],
-            related_context: '',
-            reasoning: 'Validation skipped',
-          },
-          final_confidence: issue.confidence,
-        }));
-      } else {
-        this.sendStatus({
-          type: 'progress',
-          message: `验证 ${agentType} 发现的 ${agentResult.issues.length} 个问题...`,
-          details: { agent: agentType, issues: agentResult.issues.length },
-        });
-
-        const validationResult = await validator.validateBatch(agentResult.issues, 3);
-        validatedForThisAgent = validationResult.issues;
-        totalTokens += validationResult.tokensUsed;
-
-        if (this.options.verbose) {
-          const confirmed = validatedForThisAgent.filter(
-            (i) => i.validation_status === 'confirmed'
-          ).length;
-          console.log(
-            `[Orchestrator] Agent ${agentType}: validated ${validatedForThisAgent.length} issues, ${confirmed} confirmed`
-          );
-        }
-      }
-
-      // Step 2: Deduplicate against already validated issues
-      if (allValidatedIssues.length > 0) {
-        if (this.options.verbose) {
-          console.log(
-            `[Orchestrator] Deduplicating ${validatedForThisAgent.length} new issues against ${allValidatedIssues.length} existing issues...`
-          );
-        }
-
-        this.sendStatus({
-          type: 'progress',
-          message: `去重 ${agentType} 的问题...`,
-          details: { agent: agentType },
-        });
-
-        // Combine and deduplicate
-        const combined = [...allValidatedIssues, ...validatedForThisAgent];
-        const deduplicationResult = await deduplicator.deduplicate(combined);
-        totalTokens += deduplicationResult.tokensUsed;
-
-        // Update the main list with deduplicated results
-        allValidatedIssues.length = 0;
-        allValidatedIssues.push(...deduplicationResult.uniqueIssues);
-
-        if (this.options.verbose) {
-          console.log(
-            `[Orchestrator] After deduplication: ${allValidatedIssues.length} unique issues (removed ${deduplicationResult.duplicateGroups.length} duplicate groups)`
-          );
-        }
-      } else {
-        // First agent, just add all validated issues
-        allValidatedIssues.push(...validatedForThisAgent);
-      }
-
-      this.sendStatus({
-        type: 'progress',
-        message: `${agentType} 完成，当前共 ${allValidatedIssues.length} 个唯一问题`,
-        details: { agent: agentType, total_issues: allValidatedIssues.length },
-      });
+    // Show agents starting
+    for (const agentType of this.options.agents) {
+      this.progress.agent(agentType, 'running');
     }
 
-    // Step 3: Final global deduplication
-    if (allValidatedIssues.length > 1) {
-      if (this.options.verbose) {
-        console.log('[Orchestrator] Performing final global deduplication...');
+    // Run all agents in parallel with timing
+    if (this.options.verbose) {
+      console.log(`[Orchestrator] Running ${this.options.agents.length} agents in parallel...`);
+    }
+
+    // Wrap each agent to capture its own timing
+    const agentPromises = this.options.agents.map(async (agentType) => {
+      const startTime = Date.now();
+      try {
+        const result = await this.runSingleAgent(agentType as AgentType, context, standardsText);
+        const elapsed = Date.now() - startTime;
+        return { agentType, result, elapsed, success: true as const };
+      } catch (error) {
+        const elapsed = Date.now() - startTime;
+        return { agentType, error, elapsed, success: false as const };
       }
+    });
 
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Final Deduplication',
-        message: '正在进行最终去重...',
-      });
+    const results = await Promise.all(agentPromises);
 
-      const finalDedup = await deduplicator.deduplicate(allValidatedIssues);
-      totalTokens += finalDedup.tokensUsed;
+    // Step 1: Collect all issues from all agents
+    for (const res of results) {
+      const elapsedStr =
+        res.elapsed < 1000 ? `${res.elapsed}ms` : `${(res.elapsed / 1000).toFixed(1)}s`;
 
-      if (this.options.verbose) {
-        console.log(
-          `[Orchestrator] Final deduplication: ${finalDedup.uniqueIssues.length} unique issues (removed ${finalDedup.duplicateGroups.length} duplicate groups)`
+      if (res.success) {
+        const agentResult = res.result;
+        totalTokens += agentResult.tokens_used;
+        allChecklists.push(...agentResult.checklist);
+        allRawIssues.push(...agentResult.issues);
+
+        this.progress.agent(
+          res.agentType,
+          'completed',
+          `${agentResult.issues.length} issues, ${elapsedStr}`
         );
-      }
 
+        if (this.options.verbose) {
+          console.log(
+            `[Orchestrator] Agent ${res.agentType}: found ${agentResult.issues.length} issues in ${elapsedStr}`
+          );
+        }
+      } else {
+        this.progress.agent(res.agentType, 'error', `failed, ${elapsedStr}`);
+        if (this.options.verbose) {
+          console.error(`[Orchestrator] Agent ${res.agentType} failed:`, res.error);
+        }
+      }
+    }
+
+    this.progress.info(`共发现 ${allRawIssues.length} 个原始问题`);
+
+    if (this.options.verbose) {
+      console.log(`[Orchestrator] Total raw issues from all agents: ${allRawIssues.length}`);
+    }
+
+    // Early exit if no issues found
+    if (allRawIssues.length === 0) {
       return {
-        validatedIssues: finalDedup.uniqueIssues,
+        validatedIssues: [],
         checklists: allChecklists,
         tokens_used: totalTokens,
       };
     }
 
+    // Step 2: Deduplicate all issues BEFORE validation (key optimization!)
+    this.progress.progress('去重中...');
+    this.sendStatus({
+      type: 'phase',
+      phase: 'Deduplication',
+      message: `正在去重 ${allRawIssues.length} 个问题...`,
+    });
+
+    const deduplicator = createDeduplicator({
+      verbose: this.options.verbose,
+    });
+
+    // Convert raw issues to "pseudo-validated" for deduplication
+    const pseudoValidatedIssues: ValidatedIssue[] = allRawIssues.map((issue) => ({
+      ...issue,
+      validation_status: 'pending' as const,
+      grounding_evidence: {
+        checked_files: [],
+        checked_symbols: [],
+        related_context: '',
+        reasoning: 'Pending validation',
+      },
+      final_confidence: issue.confidence,
+    }));
+
+    const deduplicationResult = await deduplicator.deduplicate(pseudoValidatedIssues);
+    totalTokens += deduplicationResult.tokensUsed;
+
+    const uniqueIssues = deduplicationResult.uniqueIssues;
+
+    this.progress.success(`去重完成: ${allRawIssues.length} → ${uniqueIssues.length} 个唯一问题`);
+
+    if (this.options.verbose) {
+      console.log(
+        `[Orchestrator] Deduplication: ${allRawIssues.length} → ${uniqueIssues.length} unique issues (removed ${deduplicationResult.duplicateGroups.length} duplicate groups)`
+      );
+    }
+
+    this.sendStatus({
+      type: 'progress',
+      message: `去重完成: ${allRawIssues.length} → ${uniqueIssues.length} 个唯一问题`,
+      details: {
+        before: allRawIssues.length,
+        after: uniqueIssues.length,
+        removed: deduplicationResult.duplicateGroups.length,
+      },
+    });
+
+    // Step 3: Filter out low-confidence issues (skip validation for them)
+    const highConfidenceIssues = uniqueIssues.filter(
+      (issue) => issue.confidence >= MIN_CONFIDENCE_FOR_VALIDATION || issue.severity === 'critical'
+    );
+
+    const lowConfidenceIssues: ValidatedIssue[] = uniqueIssues
+      .filter(
+        (issue) => issue.confidence < MIN_CONFIDENCE_FOR_VALIDATION && issue.severity !== 'critical'
+      )
+      .map((issue) => ({
+        ...issue,
+        validation_status: 'rejected' as const,
+        grounding_evidence: {
+          checked_files: [],
+          checked_symbols: [],
+          related_context: '置信度过低，自动跳过验证',
+          reasoning: `置信度 ${issue.confidence} 低于阈值 ${MIN_CONFIDENCE_FOR_VALIDATION}，自动拒绝`,
+        },
+        final_confidence: issue.confidence,
+        rejection_reason: `置信度过低 (${issue.confidence} < ${MIN_CONFIDENCE_FOR_VALIDATION})`,
+      }));
+
+    if (lowConfidenceIssues.length > 0) {
+      this.progress.info(
+        `跳过 ${lowConfidenceIssues.length} 个低置信度问题 (< ${MIN_CONFIDENCE_FOR_VALIDATION})`
+      );
+      if (this.options.verbose) {
+        console.log(
+          `[Orchestrator] Skipping validation for ${lowConfidenceIssues.length} low-confidence issues`
+        );
+      }
+    }
+
+    // Step 4: Validate only high-confidence issues
+    if (this.options.skipValidation) {
+      if (this.options.verbose) {
+        console.log('[Orchestrator] Validation skipped');
+      }
+      return {
+        validatedIssues: [...highConfidenceIssues, ...lowConfidenceIssues],
+        checklists: allChecklists,
+        tokens_used: totalTokens,
+      };
+    }
+
+    // Early exit if no high-confidence issues to validate
+    if (highConfidenceIssues.length === 0) {
+      if (this.options.verbose) {
+        console.log('[Orchestrator] No high-confidence issues to validate');
+      }
+      return {
+        validatedIssues: lowConfidenceIssues,
+        checklists: allChecklists,
+        tokens_used: totalTokens,
+      };
+    }
+
+    this.progress.progress(
+      `验证中: 0/${highConfidenceIssues.length} (跳过 ${lowConfidenceIssues.length} 个低置信度)`
+    );
+    this.sendStatus({
+      type: 'phase',
+      phase: 'Validation',
+      message: `正在验证 ${highConfidenceIssues.length} 个高置信度问题 (跳过 ${lowConfidenceIssues.length} 个低置信度)...`,
+    });
+
+    const validator = createValidator({
+      repoPath: context.repoPath,
+      verbose: this.options.verbose,
+      onProgress: (current, total, issueId) => {
+        this.progress.validation(current, total, issueId);
+        this.sendStatus({
+          type: 'progress',
+          message: `验证进度: ${current}/${total}`,
+          details: { current, total, issueId },
+        });
+      },
+    });
+
+    // Convert back to RawIssue for validation
+    const issuesToValidate: RawIssue[] = highConfidenceIssues.map((issue) => ({
+      id: issue.id,
+      file: issue.file,
+      line_start: issue.line_start,
+      line_end: issue.line_end,
+      category: issue.category,
+      severity: issue.severity,
+      title: issue.title,
+      description: issue.description,
+      suggestion: issue.suggestion,
+      code_snippet: issue.code_snippet,
+      confidence: issue.confidence,
+      source_agent: issue.source_agent,
+    }));
+
+    const validationResult = await validator.validateBatch(issuesToValidate, 5);
+    totalTokens += validationResult.tokensUsed;
+
+    const confirmed = validationResult.issues.filter(
+      (i) => i.validation_status === 'confirmed'
+    ).length;
+    const rejected = validationResult.issues.filter(
+      (i) => i.validation_status === 'rejected'
+    ).length;
+    const uncertain = validationResult.issues.length - confirmed - rejected;
+
+    this.progress.success(`验证完成: ${confirmed} 确认, ${rejected} 拒绝, ${uncertain} 不确定`);
+
+    if (this.options.verbose) {
+      console.log(
+        `[Orchestrator] Validation complete: ${confirmed} confirmed, ${rejected} rejected, ${uncertain} uncertain`
+      );
+    }
+
+    this.sendStatus({
+      type: 'progress',
+      message: `验证完成: ${validationResult.issues.length} 个问题已验证`,
+      details: {
+        total: validationResult.issues.length,
+        confirmed: validationResult.issues.filter((i) => i.validation_status === 'confirmed')
+          .length,
+        rejected: validationResult.issues.filter((i) => i.validation_status === 'rejected').length,
+        skipped_low_confidence: lowConfidenceIssues.length,
+      },
+    });
+
+    // Combine validated issues with auto-rejected low-confidence issues
     return {
-      validatedIssues: allValidatedIssues,
+      validatedIssues: [...validationResult.issues, ...lowConfidenceIssues],
       checklists: allChecklists,
       tokens_used: totalTokens,
     };
@@ -431,7 +609,6 @@ export class ReviewOrchestrator {
     // Build the prompt for this agent
     const userPrompt = buildSpecialistPrompt(agentType, {
       diff: context.diff.diff,
-      intent: context.intent,
       fileAnalyses: context.fileAnalyses,
       standardsText,
     });
@@ -451,12 +628,53 @@ export class ReviewOrchestrator {
         cwd: context.repoPath,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        maxTurns: 20,
+        maxTurns: DEFAULT_AGENT_MAX_TURNS,
+        model: DEFAULT_AGENT_MODEL,
+        maxThinkingTokens: DEFAULT_AGENT_MAX_THINKING_TOKENS,
       },
     });
 
     // Consume the stream and collect the result
     for await (const message of queryStream) {
+      // Show tool usage progress
+      if (message.type === 'tool_progress') {
+        const toolProgress = message as SDKToolProgressMessage;
+        this.progress.agentActivity(agentType, `使用工具: ${toolProgress.tool_name}`);
+      }
+
+      // Show assistant thinking/actions
+      if (message.type === 'assistant') {
+        const assistantMsg = message as SDKAssistantMessage;
+        // Extract tool use info from assistant message
+        for (const block of assistantMsg.message.content) {
+          if (block.type === 'tool_use') {
+            const toolName = block.name;
+            // Extract key info from tool input
+            let detail = '';
+            if (toolName === 'Read' && block.input && typeof block.input === 'object') {
+              const input = block.input as { file_path?: string };
+              if (input.file_path) {
+                const fileName = input.file_path.split('/').pop() || input.file_path;
+                detail = `读取 ${fileName}`;
+              }
+            } else if (toolName === 'Grep' && block.input && typeof block.input === 'object') {
+              const input = block.input as { pattern?: string };
+              if (input.pattern) {
+                detail = `搜索 "${input.pattern}"`;
+              }
+            } else if (toolName === 'Glob' && block.input && typeof block.input === 'object') {
+              const input = block.input as { pattern?: string };
+              if (input.pattern) {
+                detail = `查找 ${input.pattern}`;
+              }
+            } else {
+              detail = toolName;
+            }
+            this.progress.agentActivity(agentType, detail);
+          }
+        }
+      }
+
       if (message.type === 'result') {
         const resultMessage = message as SDKResultMessage;
         if (resultMessage.subtype === 'success') {
@@ -477,11 +695,41 @@ export class ReviewOrchestrator {
             };
           }
         } else {
-          if (this.options.verbose) {
-            console.error(`[Orchestrator] Agent ${agentType} error:`, resultMessage.subtype);
+          // Agent returned an error - log details
+          const errorType = resultMessage.subtype;
+          console.error(`[Orchestrator] Agent ${agentType} failed with: ${errorType}`);
+
+          if (errorType === 'error_max_turns') {
+            console.warn(
+              `[Orchestrator] Agent ${agentType} hit max turns limit (${DEFAULT_AGENT_MAX_TURNS}). Consider increasing DEFAULT_AGENT_MAX_TURNS.`
+            );
+          } else if (errorType === 'error_max_budget_usd') {
+            console.warn(`[Orchestrator] Agent ${agentType} exceeded budget limit.`);
+          } else if (errorType === 'error_during_execution') {
+            console.warn(`[Orchestrator] Agent ${agentType} encountered execution error.`);
+          }
+
+          // Try to get any partial result from the error response
+          const errorResult = resultMessage as { result?: string };
+          if (errorResult.result) {
+            resultText = errorResult.result;
+            console.log(
+              `[Orchestrator] Got partial result from failed agent (${resultText.length} chars)`
+            );
           }
         }
       }
+    }
+
+    // Check if we got any result
+    if (!resultText || resultText.trim() === '') {
+      console.warn(`[Orchestrator] Agent ${agentType} returned empty response`);
+      return {
+        agent: agentType,
+        issues: [],
+        checklist: [],
+        tokens_used: tokensUsed,
+      };
     }
 
     // Parse the text result if no structured output

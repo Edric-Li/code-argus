@@ -118,8 +118,8 @@ export interface DiffAnalyzerConfig {
  * Default analyzer configuration
  */
 export const DEFAULT_ANALYZER_CONFIG: DiffAnalyzerConfig = {
-  maxTokensPerBatch: 30000,
-  maxConcurrency: 5,
-  maxRetries: 3,
-  retryDelayMs: 1000,
+  maxTokensPerBatch: 50000,
+  maxConcurrency: 10,
+  maxRetries: 2,
+  retryDelayMs: 500,
 };

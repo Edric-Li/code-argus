@@ -246,16 +246,11 @@ export function determineRiskLevel(issues: ValidatedIssue[]): RiskLevel {
  */
 export function generateSummary(
   issues: ValidatedIssue[],
-  context?: ReviewContext,
+  _context?: ReviewContext,
   language: 'en' | 'zh' = 'zh'
 ): string {
   const bySeverity = groupBySeverity(issues);
   const parts: string[] = [];
-
-  // Intent summary
-  if (context?.intent.primary_goal) {
-    parts.push(`**${translate('PR Goal', language)}**: ${context.intent.primary_goal}`);
-  }
 
   // Issue count summary
   if (issues.length === 0) {

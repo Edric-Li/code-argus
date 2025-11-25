@@ -8,6 +8,12 @@ import { query, type SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { RawIssue, ValidatedIssue, SymbolLookup } from './types.js';
 import { DEFAULT_VALIDATOR_MAX_TURNS } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
+import { withConcurrency } from '../utils/index.js';
+
+/**
+ * Progress callback for validation
+ */
+export type ValidationProgressCallback = (current: number, total: number, issueId: string) => void;
 
 /**
  * Validator options
@@ -19,6 +25,18 @@ export interface ValidatorOptions {
   verbose?: boolean;
   /** Maximum turns for validation */
   maxTurns?: number;
+  /** Progress callback */
+  onProgress?: ValidationProgressCallback;
+}
+
+/**
+ * Internal resolved options (with defaults applied)
+ */
+interface ResolvedValidatorOptions {
+  repoPath: string;
+  verbose: boolean;
+  maxTurns: number;
+  onProgress?: ValidationProgressCallback;
 }
 
 /**
@@ -37,7 +55,7 @@ export interface ValidationResult {
  * Validates one issue at a time by reading code and collecting evidence.
  */
 export class IssueValidator {
-  private options: Required<ValidatorOptions>;
+  private options: ResolvedValidatorOptions;
 
   constructor(options: ValidatorOptions) {
     this.options = {
@@ -75,18 +93,25 @@ export class IssueValidator {
     });
 
     // Consume the stream
+    let resultSubtype = '';
     for await (const message of queryStream) {
       if (message.type === 'result') {
         const resultMessage = message as SDKResultMessage;
+        resultSubtype = resultMessage.subtype;
         if (resultMessage.subtype === 'success') {
           resultText = resultMessage.result;
           tokensUsed = resultMessage.usage.input_tokens + resultMessage.usage.output_tokens;
         } else {
-          if (this.options.verbose) {
-            console.error(`[Validator] Validation error:`, resultMessage.subtype);
-          }
+          console.error(`[Validator] Issue ${issue.id} ended with: ${resultMessage.subtype}`);
         }
       }
+    }
+
+    // Check for empty result
+    if (!resultText || resultText.trim() === '') {
+      console.error(
+        `[Validator] Issue ${issue.id} returned empty result (subtype: ${resultSubtype})`
+      );
     }
 
     // Parse validation result
@@ -103,30 +128,49 @@ export class IssueValidator {
   }
 
   /**
-   * Validate multiple issues concurrently
+   * Validate multiple issues concurrently using a worker pool.
+   *
+   * Uses a true concurrent pool pattern where N workers run continuously.
+   * When one task completes, the worker immediately picks up the next task.
+   * This is more efficient than batch processing which waits for all tasks
+   * in a batch to complete before starting the next batch.
    */
   async validateBatch(
     issues: RawIssue[],
-    concurrency = 3
+    concurrency = 5
   ): Promise<{ issues: ValidatedIssue[]; tokensUsed: number }> {
     if (issues.length === 0) {
       return { issues: [], tokensUsed: 0 };
     }
 
     if (this.options.verbose) {
-      console.log(`[Validator] Validating ${issues.length} issues with concurrency ${concurrency}`);
+      console.log(
+        `[Validator] Validating ${issues.length} issues with concurrency pool (max ${concurrency})`
+      );
     }
 
-    const results: ValidationResult[] = [];
-    let totalTokens = 0;
+    // Track progress
+    let completedCount = 0;
+    const total = issues.length;
 
-    // Process in batches
-    for (let i = 0; i < issues.length; i += concurrency) {
-      const batch = issues.slice(i, i + concurrency);
-      const batchResults = await Promise.all(batch.map((issue) => this.validate(issue)));
+    // Create task functions for each issue with progress tracking
+    const tasks = issues.map((issue) => async () => {
+      const result = await this.validate(issue);
+      completedCount++;
+      // Call progress callback after each validation completes
+      if (this.options.onProgress) {
+        this.options.onProgress(completedCount, total, issue.id);
+      }
+      return result;
+    });
 
-      results.push(...batchResults);
-      totalTokens += batchResults.reduce((sum, r) => sum + r.tokensUsed, 0);
+    // Run with concurrent pool - when one finishes, next starts immediately
+    const results = await withConcurrency(tasks, concurrency);
+
+    const totalTokens = results.reduce((sum, r) => sum + r.tokensUsed, 0);
+
+    if (this.options.verbose) {
+      console.log(`[Validator] All ${issues.length} issues validated`);
     }
 
     return {
@@ -142,22 +186,24 @@ export class IssueValidator {
     return `You are an expert code reviewer specializing in validating issues discovered by other agents.
 Your job is to verify each issue by reading the actual code and grounding claims in evidence.
 
-**CRITICAL REQUIREMENTS**:
-1. **USE SEQUENTIAL THINKING**: Before validating, use the mcp__sequential-thinking__sequentialthinking tool to plan your validation strategy
-2. All explanations in "related_context" and "reasoning" must be in Chinese
-3. **OUTPUT ONLY JSON**: Your final response must be ONLY the JSON object, with no explanatory text before or after
-
 **Validation workflow**:
-1. Use sequential-thinking to understand what needs to be verified
-2. Use Read tool to examine the actual code at the reported location
-3. Use Grep/Glob if you need to find related code (error handlers, tests, etc.)
-4. Analyze the evidence and make a decision:
+1. Use Read tool to examine the actual code at the reported location
+2. Use Grep/Glob if you need to find related code (error handlers, tests, etc.)
+3. Analyze the evidence and make a decision:
    - **confirmed**: The issue exists as described
    - **rejected**: The issue does not exist or is incorrect
    - **uncertain**: Cannot determine with confidence
-5. Output your result as ONLY a JSON object (no markdown code blocks, no explanatory text)
+4. Output your result as JSON
 
-**Required output format** (pure JSON only):
+**CRITICAL RULES**:
+1. All explanations must be in Chinese
+2. Keep "related_context" VERY SHORT (1 sentence, max 50 chars)
+3. Keep "reasoning" concise (1-2 sentences, max 150 chars)
+4. DO NOT include code snippets or multi-line text in JSON string values
+5. DO NOT use special characters like backticks in JSON string values
+
+**Required JSON format**:
+\`\`\`json
 {
   "validation_status": "confirmed" | "rejected" | "uncertain",
   "final_confidence": 0.0-1.0,
@@ -166,15 +212,14 @@ Your job is to verify each issue by reading the actual code and grounding claims
     "checked_symbols": [
       {"name": "functionName", "type": "definition", "locations": ["file.ts:10"]}
     ],
-    "related_context": "相关代码的中文说明",
-    "reasoning": "详细的验证推理过程（中文）"
+    "related_context": "简短说明（不超过50字）",
+    "reasoning": "简洁的验证结论（不超过150字）"
   },
-  "rejection_reason": "如果rejected，说明原因（中文）",
-  "revised_description": "如果需要修正描述（中文）",
+  "rejection_reason": "如果rejected，简述原因",
+  "revised_description": "如果需要修正描述",
   "revised_severity": "critical" | "error" | "warning" | "suggestion"
 }
-
-**IMPORTANT**: Do not wrap the JSON in markdown code blocks. Do not add any text before or after the JSON. Output ONLY the JSON object.`;
+\`\`\``;
   }
 
   /**
@@ -200,7 +245,13 @@ Please verify this issue by:
 2. Checking for any mitigating factors (error handling, tests, etc.)
 3. Making a validation decision
 
-Output your result as JSON.`;
+After your analysis, output ONLY the JSON result in a markdown code block like this:
+\`\`\`json
+{
+  "validation_status": "...",
+  ...
+}
+\`\`\``;
   }
 
   /**
@@ -247,20 +298,31 @@ Output your result as JSON.`;
         revised_severity: parsed.revised_severity,
       };
     } catch (error) {
-      console.error('[Validator] Failed to parse validation result:', error);
-      console.error('[Validator] Result text:', resultText.substring(0, 500));
+      console.error(
+        `[Validator] Issue ${originalIssue.id}: Failed to parse validation result:`,
+        error
+      );
+      console.error(
+        `[Validator] Issue ${originalIssue.id}: Result text length: ${resultText.length}`
+      );
+      if (resultText.length > 0) {
+        console.error(
+          `[Validator] Issue ${originalIssue.id}: Result text:`,
+          resultText.substring(0, 1000)
+        );
+      }
 
-      // Return as pending if parsing fails
+      // Return as uncertain if parsing fails (not pending, since validation was attempted)
       return {
         ...originalIssue,
-        validation_status: 'pending',
+        validation_status: 'uncertain',
         grounding_evidence: {
           checked_files: [],
           checked_symbols: [],
           related_context: '',
           reasoning: 'Validation failed: Unable to parse result',
         },
-        final_confidence: originalIssue.confidence,
+        final_confidence: originalIssue.confidence * 0.5,
       };
     }
   }

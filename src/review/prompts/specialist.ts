@@ -6,7 +6,6 @@
 
 import type { AgentType, ProjectStandards } from '../types.js';
 import type { ChangeAnalysis } from '../../analyzer/types.js';
-import type { IntentAnalysis } from '../../intent/types.js';
 
 /**
  * Context passed to specialist agents
@@ -14,8 +13,6 @@ import type { IntentAnalysis } from '../../intent/types.js';
 export interface SpecialistContext {
   /** Raw diff content */
   diff: string;
-  /** PR intent analysis */
-  intent: IntentAnalysis;
   /** File change analyses */
   fileAnalyses: ChangeAnalysis[];
   /** Project standards (as prompt text) */
@@ -27,14 +24,6 @@ export interface SpecialistContext {
  */
 export function buildSpecialistPrompt(agentType: AgentType, context: SpecialistContext): string {
   const sections: string[] = [];
-
-  // PR Intent
-  sections.push('## PR Intent\n');
-  sections.push(`**Primary Goal**: ${context.intent.primary_goal}`);
-  sections.push(`**Summary**: ${context.intent.summary}`);
-  sections.push(`**Categories**: ${context.intent.change_categories.join(', ')}`);
-  sections.push(`**Confidence**: ${context.intent.confidence}`);
-  sections.push('');
 
   // Project Standards
   if (context.standardsText) {

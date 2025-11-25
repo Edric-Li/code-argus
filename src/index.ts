@@ -11,7 +11,7 @@ import { parseDiff } from './git/parser.js';
 import { getPRCommits } from './git/commits.js';
 import { createDiffAnalyzer } from './analyzer/index.js';
 import { analyzeIntent, filterCommits } from './intent/index.js';
-import { review as runReview, formatReport } from './review/index.js';
+import { streamingReview, formatReport } from './review/index.js';
 
 /**
  * Print usage information
@@ -127,7 +127,7 @@ Format:        ${options.format}
 =================================
 `);
 
-  const report = await runReview({
+  const report = await streamingReview({
     repoPath,
     sourceBranch,
     targetBranch,

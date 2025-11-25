@@ -14,6 +14,7 @@ import {
   DEFAULT_ANALYZER_CONFIG,
 } from './types.js';
 import { DIFF_ANALYSIS_SYSTEM_PROMPT, buildUserPrompt } from './prompts.js';
+import { extractJSON } from '../review/utils/json-parser.js';
 
 /**
  * Batch of files to analyze together
@@ -215,13 +216,10 @@ export class DiffAnalyzer {
    */
   private parseResponse(content: string, batchFiles: DiffFile[]): ChangeAnalysis[] {
     try {
-      // Try to extract JSON from response
-      let jsonStr = content.trim();
-
-      // Handle markdown code blocks
-      const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (jsonMatch) {
-        jsonStr = jsonMatch[1]!.trim();
+      // Use robust JSON extraction with repair capabilities
+      const jsonStr = extractJSON(content);
+      if (!jsonStr) {
+        throw new Error('No JSON found in response');
       }
 
       const parsed: LLMAnalysisResponse = JSON.parse(jsonStr);

@@ -213,7 +213,6 @@ export interface ProjectStandards {
 
 import type { DiffResult } from '../git/type.js';
 import type { ChangeAnalysis } from '../analyzer/types.js';
-import type { IntentAnalysis } from '../intent/types.js';
 
 /**
  * Complete context for code review
@@ -223,8 +222,6 @@ export interface ReviewContext {
   repoPath: string;
   /** Diff result */
   diff: DiffResult;
-  /** Intent analysis result */
-  intent: IntentAnalysis;
   /** File change analyses */
   fileAnalyses: ChangeAnalysis[];
   /** Project standards */
@@ -345,6 +342,8 @@ export interface OrchestratorOptions {
   monitorPort?: number;
   /** Delay in ms to keep monitor server alive after completion (default: 5000, 0 to disable) */
   monitorStopDelay?: number;
+  /** Show CLI progress output (default: true) */
+  showProgress?: boolean;
 }
 
 /**

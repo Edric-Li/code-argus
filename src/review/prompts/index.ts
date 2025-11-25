@@ -28,3 +28,11 @@ export {
   type SpecialistContext,
   type ValidatorContext,
 } from './specialist.js';
+
+// Streaming prompts
+export {
+  REPORT_ISSUE_TOOL_INSTRUCTIONS,
+  STREAMING_CHECKLISTS,
+  buildStreamingSystemPrompt,
+  buildStreamingUserPrompt,
+} from './streaming.js';
