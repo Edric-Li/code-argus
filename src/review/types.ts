@@ -48,6 +48,24 @@ export const DEFAULT_VALIDATION_STRATEGIES: Record<AgentType, ValidationStrategy
 };
 
 // ============================================================================
+// Validation Prompt Types
+// ============================================================================
+
+/**
+ * Validation prompt configuration for different issue categories
+ */
+export interface ValidationPromptConfig {
+  /** Issue category this config applies to */
+  category: IssueCategory;
+  /** Additional system prompt with category-specific validation rules */
+  additionalSystemPrompt: string;
+  /** Key validation focus points for this category */
+  validationFocus: string[];
+  /** Specific rejection criteria for this category */
+  rejectionCriteria: string[];
+}
+
+// ============================================================================
 // Issue Types
 // ============================================================================
 

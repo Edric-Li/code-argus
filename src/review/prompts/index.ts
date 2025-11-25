@@ -36,3 +36,20 @@ export {
   buildStreamingSystemPrompt,
   buildStreamingUserPrompt,
 } from './streaming.js';
+
+// Validation prompts
+export {
+  BASE_VALIDATION_PROMPT,
+  VALIDATION_JSON_FORMAT,
+  VALIDATION_PROMPT_CONFIGS,
+  buildValidationSystemPrompt,
+  getValidationPromptConfig,
+} from './validation.js';
+
+// Template loader
+export {
+  loadBaseValidationTemplate,
+  loadCategoryValidationTemplate,
+  clearTemplateCache,
+  preloadAllTemplates,
+} from './template-loader.js';
