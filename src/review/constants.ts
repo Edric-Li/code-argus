@@ -3,15 +3,15 @@
  */
 
 /**
- * Default model for deduplication (using Haiku for cost efficiency)
+ * Default model for all agents
+ * Using Opus for highest quality code review
  */
-export const DEFAULT_DEDUP_MODEL = 'claude-3-5-haiku-20241022';
+export const DEFAULT_AGENT_MODEL = 'claude-opus-4-5-20251101';
 
 /**
- * Default model for specialist agents
- * Using Sonnet for balanced speed/quality (no extended thinking needed for code review)
+ * Default model for deduplication
  */
-export const DEFAULT_AGENT_MODEL = 'claude-sonnet-4-5-20250929';
+export const DEFAULT_DEDUP_MODEL = 'claude-opus-4-5-20251101';
 
 /**
  * Max thinking tokens for agents (0 = disable extended thinking)

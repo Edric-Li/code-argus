@@ -19,6 +19,8 @@ import type {
   OrchestratorInput,
   AgentType,
   ChecklistItem,
+  RawIssue,
+  ValidatedIssue,
 } from './types.js';
 import { createStandards } from './standards/index.js';
 import { aggregate } from './aggregator.js';
@@ -34,7 +36,7 @@ import { parseDiff, type DiffFile } from '../git/parser.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { StatusServer } from '../monitor/status-server.js';
-import { createIssueCollector, type IssueCollector } from './issue-collector.js';
+import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
 import {
@@ -76,9 +78,10 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
 export class StreamingReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
   private statusServer?: StatusServer;
-  private issueCollector?: IssueCollector;
+  private streamingValidator?: StreamingValidator;
   private progress: IProgressPrinter;
   private rulesConfig: RulesConfig = EMPTY_RULES_CONFIG;
+  private autoRejectedIssues: ValidatedIssue[] = [];
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -209,71 +212,51 @@ export class StreamingReviewOrchestrator {
       // Update context to use worktree path for agent execution
       const reviewRepoPath = worktreeInfo.worktreePath;
 
-      // Create issue collector with progress callbacks
-      this.issueCollector = createIssueCollector({
-        repoPath: reviewRepoPath,
-        verbose: this.options.verbose,
-        skipValidation: this.options.skipValidation,
-        onIssueReceived: (issue) => {
-          // Report issue as soon as it's discovered
-          const severityIcon =
-            issue.severity === 'critical'
-              ? '🔴'
-              : issue.severity === 'error'
-                ? '🟠'
-                : issue.severity === 'warning'
-                  ? '🟡'
-                  : '🔵';
-          this.progress.info(
-            `${severityIcon} [${issue.source_agent}] ${issue.title} (${issue.file}:${issue.line_start})`
-          );
-          this.sendStatus({
-            type: 'progress',
-            message: `发现问题: ${issue.title}`,
-            details: {
-              issue_id: issue.id,
-              severity: issue.severity,
-              file: issue.file,
-              line: issue.line_start,
+      // Reset auto-rejected issues for this review
+      this.autoRejectedIssues = [];
+
+      // Create streaming validator with progress callbacks
+      this.streamingValidator = this.options.skipValidation
+        ? undefined
+        : createStreamingValidator({
+            repoPath: reviewRepoPath,
+            verbose: this.options.verbose,
+            maxConcurrentSessions: 5,
+            callbacks: {
+              onIssueDiscovered: (issue) => {
+                this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
+                this.sendStatus({
+                  type: 'progress',
+                  message: `发现问题: ${issue.title}`,
+                  details: {
+                    issue_id: issue.id,
+                    severity: issue.severity,
+                    file: issue.file,
+                    line: issue.line_start,
+                  },
+                });
+              },
+              onIssueValidated: (issue) => {
+                const reason =
+                  issue.validation_status === 'rejected'
+                    ? issue.rejection_reason || issue.grounding_evidence?.reasoning
+                    : undefined;
+                this.progress.issueValidated(issue.title, issue.validation_status, reason);
+                this.sendStatus({
+                  type: 'progress',
+                  message: `验证完成: ${issue.title} (${issue.validation_status})`,
+                  details: {
+                    issue_id: issue.id,
+                    status: issue.validation_status,
+                    reason: reason,
+                  },
+                });
+              },
+              onAutoRejected: (issue, reason) => {
+                this.progress.autoRejected(issue.title, reason);
+              },
             },
           });
-        },
-        onIssueValidated: (issue) => {
-          // Get the reason for the validation result
-          const reason =
-            issue.validation_status === 'rejected'
-              ? issue.rejection_reason || issue.grounding_evidence.reasoning
-              : issue.grounding_evidence.reasoning;
-
-          // Display with full reason (no truncation)
-          const statusIcon =
-            issue.validation_status === 'confirmed'
-              ? '✓'
-              : issue.validation_status === 'rejected'
-                ? '✗'
-                : '?';
-
-          // Output validation result with issue title for context
-          this.progress.info(
-            `  └─ [${issue.title}] 验证: ${statusIcon} ${issue.validation_status}${reason ? ` | ${reason}` : ''}`
-          );
-
-          this.sendStatus({
-            type: 'progress',
-            message: `验证完成: ${issue.title} (${issue.validation_status})`,
-            details: {
-              issue_id: issue.id,
-              status: issue.validation_status,
-              reason: reason,
-            },
-          });
-        },
-        onStatusUpdate: (message) => {
-          if (this.options.verbose) {
-            console.log(`[IssueCollector] ${message}`);
-          }
-        },
-      });
 
       // Phase 2: Run specialist agents with streaming issue reporting
       this.progress.phase(2, 4, `运行 ${agentsToRun.length} 个 Agents...`);
@@ -304,16 +287,48 @@ export class StreamingReviewOrchestrator {
         message: '等待验证完成...',
       });
 
-      await this.issueCollector.waitForValidations();
+      // Flush streaming validator and get results
+      let validatedIssues: ValidatedIssue[] = [];
+      if (this.streamingValidator) {
+        const validationResult = await this.streamingValidator.flush();
+        validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+        tokensUsed += validationResult.tokensUsed;
 
-      const validatedIssues = this.issueCollector.getValidatedIssues();
-      const collectorStats = this.issueCollector.getStats();
-      tokensUsed += collectorStats.tokensUsed;
+        const confirmed = validatedIssues.filter((i) => i.validation_status === 'confirmed').length;
+        const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
+        const uncertain = validatedIssues.length - confirmed - rejected;
+
+        this.progress.validationSummary({
+          total: validatedIssues.length,
+          confirmed,
+          rejected,
+          uncertain,
+          autoRejected: this.autoRejectedIssues.length,
+          tokensUsed: validationResult.tokensUsed,
+          timeMs: Date.now() - startTime,
+        });
+      } else if (this.options.skipValidation) {
+        // Skip validation mode - convert raw issues to validated without actual validation
+        const rawIssues =
+          (this as unknown as { _rawIssuesForSkipMode?: RawIssue[] })._rawIssuesForSkipMode || [];
+        validatedIssues = rawIssues.map((issue) => ({
+          ...issue,
+          validation_status: 'pending' as const,
+          grounding_evidence: {
+            checked_files: [],
+            checked_symbols: [],
+            related_context: '跳过验证',
+            reasoning: '用户选择跳过验证',
+          },
+          final_confidence: issue.confidence,
+        }));
+        this.progress.info(`跳过验证: ${validatedIssues.length} 个问题`);
+      }
+
       this.progress.success(`验证完成: ${validatedIssues.length} 个有效问题`);
 
       if (this.options.verbose) {
-        console.log(`[StreamingOrchestrator] Total issues: ${collectorStats.totalReported}`);
-        console.log(`[StreamingOrchestrator] Validated: ${collectorStats.validated}`);
+        console.log(`[StreamingOrchestrator] Total validated issues: ${validatedIssues.length}`);
       }
 
       // Phase 4: Aggregate and generate report
@@ -516,15 +531,9 @@ export class StreamingReviewOrchestrator {
         );
         const elapsed = Date.now() - startTime;
 
-        // Flush any buffered issues for this agent (for batch-on-agent-complete strategy)
-        await this.issueCollector!.flushAgentIssues(agentType as AgentType);
-
         return { agentType, result, elapsed, success: true as const };
       } catch (error) {
         const elapsed = Date.now() - startTime;
-
-        // Still flush buffered issues even on error
-        await this.issueCollector!.flushAgentIssues(agentType as AgentType);
 
         return { agentType, error, elapsed, success: false as const };
       }
@@ -565,11 +574,16 @@ export class StreamingReviewOrchestrator {
    * Create MCP server with report_issue tool
    */
   private createReportIssueMcpServer() {
-    const collector = this.issueCollector!;
+    const validator = this.streamingValidator;
     const verbose = this.options.verbose;
+    const skipValidation = this.options.skipValidation;
+    const rawIssuesForSkipMode: RawIssue[] = [];
+
+    // Store ref for accessing from outside (for skipValidation mode)
+    (this as unknown as { _rawIssuesForSkipMode: RawIssue[] })._rawIssuesForSkipMode =
+      rawIssuesForSkipMode;
 
     // We need to track which agent is calling, so we'll create per-agent servers
-    // For now, use a simpler approach with a shared server
     return (agentType: AgentType) =>
       createSdkMcpServer({
         name: 'code-review-tools',
@@ -601,29 +615,45 @@ Write all text (title, description, suggestion) in Chinese.`,
                 console.log(`[MCP] report_issue called by ${agentType}: ${args.title}`);
               }
 
-              const result = await collector.reportIssue(
-                {
-                  file: args.file,
-                  line_start: args.line_start,
-                  line_end: args.line_end,
-                  severity: args.severity,
-                  category: args.category,
-                  title: args.title,
-                  description: args.description,
-                  suggestion: args.suggestion,
-                  code_snippet: args.code_snippet,
-                  confidence: args.confidence,
-                },
-                agentType
-              );
+              // Generate unique issue ID
+              const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-              const responseText =
-                result.status === 'accepted'
-                  ? `✓ 问题已接收 (ID: ${result.issue_id})\n正在后台验证...`
-                  : `✗ 报告失败: ${result.message}`;
+              const rawIssue: RawIssue = {
+                id: issueId,
+                file: args.file,
+                line_start: args.line_start,
+                line_end: args.line_end,
+                severity: args.severity,
+                category: args.category,
+                title: args.title,
+                description: args.description,
+                suggestion: args.suggestion,
+                code_snippet: args.code_snippet,
+                confidence: args.confidence,
+                source_agent: agentType,
+              };
+
+              if (skipValidation) {
+                // Skip validation mode - just collect issues
+                rawIssuesForSkipMode.push(rawIssue);
+                return {
+                  content: [
+                    { type: 'text' as const, text: `✓ 问题已接收 (ID: ${issueId})\n跳过验证模式` },
+                  ],
+                };
+              }
+
+              // Enqueue for streaming validation
+              const autoRejected = validator?.enqueue(rawIssue);
+              if (autoRejected) {
+                // Issue was auto-rejected due to low confidence
+                this.autoRejectedIssues.push(autoRejected);
+              }
 
               return {
-                content: [{ type: 'text' as const, text: responseText }],
+                content: [
+                  { type: 'text' as const, text: `✓ 问题已接收 (ID: ${issueId})\n正在后台验证...` },
+                ],
               };
             }
           ),

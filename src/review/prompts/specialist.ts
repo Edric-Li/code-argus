@@ -17,6 +17,8 @@ export interface SpecialistContext {
   fileAnalyses: ChangeAnalysis[];
   /** Project standards (as prompt text) */
   standardsText: string;
+  /** Project-specific rules (optional) */
+  projectRules?: string;
 }
 
 /**
@@ -52,6 +54,12 @@ export function buildSpecialistPrompt(agentType: AgentType, context: SpecialistC
   // Focus areas based on agent type
   sections.push(getAgentFocusInstructions(agentType));
   sections.push('');
+
+  // Project-specific rules (if provided)
+  if (context.projectRules) {
+    sections.push(context.projectRules);
+    sections.push('');
+  }
 
   // The diff
   sections.push('## Code Changes (Diff)\n');

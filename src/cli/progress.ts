@@ -16,6 +16,11 @@ export interface ProgressPrinterOptions {
 }
 
 /**
+ * Validation status for streaming validation
+ */
+export type ValidationStatusType = 'confirmed' | 'rejected' | 'uncertain' | 'pending';
+
+/**
  * Progress printer interface (for null object pattern)
  */
 export interface IProgressPrinter {
@@ -32,6 +37,20 @@ export interface IProgressPrinter {
   failed(message: string): void;
   divider(): void;
   stats(items: Array<{ label: string; value: string | number }>): void;
+
+  // Streaming validation methods
+  issueDiscovered(title: string, file: string, severity: string): void;
+  issueValidated(title: string, status: ValidationStatusType, reason?: string): void;
+  autoRejected(title: string, reason: string): void;
+  validationSummary(stats: {
+    total: number;
+    confirmed: number;
+    rejected: number;
+    uncertain: number;
+    autoRejected: number;
+    tokensUsed: number;
+    timeMs: number;
+  }): void;
 }
 
 /**
@@ -277,6 +296,82 @@ export class ProgressPrinter implements IProgressPrinter {
     const parts = items.map((item) => `${this.c('gray', item.label + ':')} ${item.value}`);
     console.log(`      ${parts.join('  ')}`);
   }
+
+  // ============ Streaming Validation Methods ============
+
+  /**
+   * Print issue discovered (before validation)
+   */
+  issueDiscovered(title: string, file: string, severity: string): void {
+    this.stopSpinner();
+    const fileName = file.split('/').pop() || file;
+    const severityIcon =
+      severity === 'critical'
+        ? this.c('red', '🔴')
+        : severity === 'error'
+          ? this.c('red', '🟠')
+          : severity === 'warning'
+            ? this.c('yellow', '🟡')
+            : this.c('blue', '🔵');
+    console.log(`      ${severityIcon} ${title} ${this.c('gray', `(${fileName})`)}`);
+  }
+
+  /**
+   * Print issue validation completed
+   */
+  issueValidated(title: string, status: ValidationStatusType, reason?: string): void {
+    this.stopSpinner();
+    const icon =
+      status === 'confirmed'
+        ? this.c('green', '✅')
+        : status === 'rejected'
+          ? this.c('red', '❌')
+          : this.c('yellow', '❓');
+    const statusText =
+      status === 'confirmed'
+        ? this.c('green', '确认')
+        : status === 'rejected'
+          ? this.c('red', '拒绝')
+          : this.c('yellow', '不确定');
+    const reasonStr = reason ? ` | ${this.c('gray', reason)}` : '';
+    console.log(`      ${icon} ${title} → ${statusText}${reasonStr}`);
+  }
+
+  /**
+   * Print auto-rejected issue
+   */
+  autoRejected(title: string, reason: string): void {
+    this.stopSpinner();
+    console.log(`      ${this.c('gray', '⏭️')} ${title} ${this.c('gray', `(${reason})`)}`);
+  }
+
+  /**
+   * Print validation summary
+   */
+  validationSummary(stats: {
+    total: number;
+    confirmed: number;
+    rejected: number;
+    uncertain: number;
+    autoRejected: number;
+    tokensUsed: number;
+    timeMs: number;
+  }): void {
+    this.stopSpinner();
+    const timeStr = this.formatDuration(stats.timeMs);
+    const tokenStr =
+      stats.tokensUsed > 1000 ? `${(stats.tokensUsed / 1000).toFixed(1)}k` : `${stats.tokensUsed}`;
+
+    console.log('');
+    console.log(this.c('bold', '      📊 验证统计:'));
+    console.log(
+      `         总计: ${stats.total} | ${this.c('green', `确认: ${stats.confirmed}`)} | ${this.c('red', `拒绝: ${stats.rejected}`)} | ${this.c('yellow', `不确定: ${stats.uncertain}`)}`
+    );
+    if (stats.autoRejected > 0) {
+      console.log(`         自动跳过: ${stats.autoRejected} (低置信度)`);
+    }
+    console.log(`         耗时: ${timeStr} | Tokens: ${tokenStr}`);
+  }
 }
 
 /**
@@ -303,4 +398,9 @@ export const nullProgressPrinter: IProgressPrinter = {
   failed: () => {},
   divider: () => {},
   stats: () => {},
+  // Streaming validation methods
+  issueDiscovered: () => {},
+  issueValidated: () => {},
+  autoRejected: () => {},
+  validationSummary: () => {},
 };
