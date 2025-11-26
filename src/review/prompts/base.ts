@@ -5,6 +5,11 @@
  */
 
 import type { Severity, IssueCategory, RawIssue, ChecklistItem } from '../types.js';
+import {
+  loadToolUsageTemplate,
+  loadOutputFormatTemplate,
+  loadDiffAnalysisTemplate,
+} from './template-loader.js';
 
 // ============================================================================
 // JSON Schemas for Agent Output
@@ -118,81 +123,37 @@ export const AGENT_OUTPUT_JSON_SCHEMA: Record<string, unknown> = {
 };
 
 // ============================================================================
-// Common Instructions
+// Common Instructions (loaded from templates)
 // ============================================================================
 
 /**
  * Instructions for using tools effectively
+ * @returns Tool usage instructions from template
  */
-export const TOOL_USAGE_INSTRUCTIONS = `
-## Tool Usage Guidelines
-
-You have access to the following tools:
-- **Read**: Read file contents. Use this to understand the full context, not just the diff.
-- **Grep**: Search for patterns in the codebase. Use this to find related code.
-- **Glob**: Find files matching a pattern. Use this to locate relevant files.
-- **Bash**: Run shell commands. Use this sparingly, mainly for running lint tools.
-
-**Important**:
-1. Use Read to get full file context when needed
-2. Don't assume - verify by reading the actual code
-3. Search for related code (implementations, tests, usages) when needed
-
-**Example workflow**:
-1. Analyze the diff to identify potential issues
-2. Use Read to examine the actual files for context
-3. Use Grep/Glob to find related code if needed
-4. Output your findings as JSON
-`;
+export function getToolUsageInstructions(): string {
+  return loadToolUsageTemplate();
+}
 
 /**
  * Instructions for output format
+ * @returns Output format instructions from template
  */
-export const OUTPUT_FORMAT_INSTRUCTIONS = `
-## Output Format
-
-**IMPORTANT - Language Requirement**:
-- All issue descriptions, suggestions, and explanations MUST be written in Chinese.
-- Use clear, professional Chinese to describe problems and provide suggestions.
-
-You must output your findings as valid JSON with this structure:
-
-\`\`\`json
-${AGENT_OUTPUT_SCHEMA}
-\`\`\`
-
-**Guidelines**:
-- Each issue must have a unique ID (e.g., "sec-001", "logic-002")
-- Confidence should reflect how sure you are: 0.9+ for certain, 0.7-0.9 for likely, below 0.7 for uncertain
-- Severity levels:
-  - \`critical\`: Security vulnerabilities, data loss risks, crashes
-  - \`error\`: Bugs that will cause incorrect behavior
-  - \`warning\`: Potential issues, code smells, minor bugs
-  - \`suggestion\`: Improvements, style issues, best practices
-- Always provide actionable suggestions for fixes in Chinese
-- Write all descriptions and suggestions in Chinese
-`;
+export function getOutputFormatInstructions(): string {
+  return loadOutputFormatTemplate();
+}
 
 /**
  * Instructions for handling diffs
+ * @returns Diff analysis instructions from template
  */
-export const DIFF_ANALYSIS_INSTRUCTIONS = `
-## Analyzing Diffs
+export function getDiffAnalysisInstructions(): string {
+  return loadDiffAnalysisTemplate();
+}
 
-When reviewing code changes:
-
-1. **Focus ONLY on Changed Code**: Review ONLY the lines that were added (marked with \`+\`) or modified. Do NOT review unchanged/existing code.
-2. **Consider Context**: Changes might affect surrounding unchanged code - only report issues if the CHANGE itself introduces the problem.
-3. **Check Dependencies**: Modified functions may impact their callers - but only report if the modification breaks existing functionality.
-4. **Verify Assumptions**: Use Read tool to see the full file, not just the diff.
-
-**Diff Format**:
-- Lines starting with \`+\` are additions (REVIEW THESE)
-- Lines starting with \`-\` are deletions (REVIEW THESE)
-- Lines without prefix are context (DO NOT REVIEW THESE - they are unchanged old code)
-
-**CRITICAL RULE**: Only report issues that are introduced BY THIS CHANGE. Do not report pre-existing issues in unchanged code.
-`;
+// Legacy exports for backward compatibility
+export const TOOL_USAGE_INSTRUCTIONS = loadToolUsageTemplate();
+export const OUTPUT_FORMAT_INSTRUCTIONS = loadOutputFormatTemplate();
+export const DIFF_ANALYSIS_INSTRUCTIONS = loadDiffAnalysisTemplate();
 
 // ============================================================================
 // Checklist Definitions
@@ -245,11 +206,11 @@ Your task is to analyze code changes and identify issues within your specialty a
 3. All descriptions and suggestions MUST be in Chinese
 4. Be efficient - directly analyze the diff and output findings
 
-${TOOL_USAGE_INSTRUCTIONS}
+${getToolUsageInstructions()}
 
-${DIFF_ANALYSIS_INSTRUCTIONS}
+${getDiffAnalysisInstructions()}
 
-${OUTPUT_FORMAT_INSTRUCTIONS}
+${getOutputFormatInstructions()}
 `;
 }
 

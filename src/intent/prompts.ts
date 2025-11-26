@@ -4,36 +4,13 @@
 
 import type { RawCommit } from './types.js';
 import type { AnalysisResult } from '../analyzer/types.js';
+import { loadIntentSystemTemplate } from '../review/prompts/template-loader.js';
 
 /**
  * System prompt for intent analysis
+ * Loaded from template file for easier maintenance
  */
-export const INTENT_SYSTEM_PROMPT = `你是一个代码变更意图分析专家。你的任务是根据 commit 信息和代码变更分析，总结本次 PR/MR 的意图。
-
-分析要求：
-1. 输出约200字的中文总结
-2. 重点说明"为什么"要做这个变更，而不只是"做了什么"
-3. 如果能识别出业务背景或技术背景，要提及
-4. 指出潜在的影响范围和风险点
-5. 使用专业但易懂的语言
-
-变更类别说明：
-- feature: 新功能
-- bugfix: Bug修复
-- refactor: 代码重构（不改变功能）
-- performance: 性能优化
-- style: 代码风格/格式调整
-- docs: 文档变更
-- test: 测试相关
-- chore: 构建/工具/依赖变更
-- security: 安全相关修复
-
-置信度判断：
-- high: commit 信息清晰，代码变更明确
-- medium: 部分信息模糊，但可推断意图
-- low: 信息不足，意图推测成分较大
-
-输出纯 JSON，不要 markdown 包裹。`;
+export const INTENT_SYSTEM_PROMPT = loadIntentSystemTemplate();
 
 /**
  * Build user prompt for intent analysis

@@ -1,11 +1,11 @@
 /**
- * Template Loader for Validation Prompts
+ * Template Loader for Prompt Templates
  *
  * Loads prompt templates from markdown files.
  * Templates are cached in memory for performance.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { IssueCategory } from '../types.js';
@@ -28,6 +28,9 @@ function loadTemplate(filename: string): string {
   }
 
   const filePath = join(TEMPLATE_DIR, filename);
+  if (!existsSync(filePath)) {
+    throw new Error(`Template not found: ${filePath}`);
+  }
   const content = readFileSync(filePath, 'utf-8');
   templateCache.set(filename, content);
   return content;
@@ -70,4 +73,57 @@ export function preloadAllTemplates(): void {
   for (const category of categories) {
     loadCategoryValidationTemplate(category);
   }
+  // Preload common templates
+  loadToolUsageTemplate();
+  loadOutputFormatTemplate();
+  loadDiffAnalysisTemplate();
+  loadDiffAnalyzerSystemTemplate();
+  loadIntentSystemTemplate();
+  loadDeduplicationTemplate();
+}
+
+// ============================================================================
+// Common Prompt Templates
+// ============================================================================
+
+/**
+ * Load tool usage instructions template
+ */
+export function loadToolUsageTemplate(): string {
+  return loadTemplate('tool-usage.md');
+}
+
+/**
+ * Load output format instructions template
+ */
+export function loadOutputFormatTemplate(): string {
+  return loadTemplate('output-format.md');
+}
+
+/**
+ * Load diff analysis instructions template
+ */
+export function loadDiffAnalysisTemplate(): string {
+  return loadTemplate('diff-analysis.md');
+}
+
+/**
+ * Load diff analyzer system prompt template
+ */
+export function loadDiffAnalyzerSystemTemplate(): string {
+  return loadTemplate('diff-analyzer-system.md');
+}
+
+/**
+ * Load intent analysis system prompt template
+ */
+export function loadIntentSystemTemplate(): string {
+  return loadTemplate('intent-system.md');
+}
+
+/**
+ * Load deduplication prompt template
+ */
+export function loadDeduplicationTemplate(): string {
+  return loadTemplate('deduplication.md');
 }

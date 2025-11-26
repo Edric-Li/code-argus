@@ -13,4 +13,12 @@ export type {
 
 export { EMPTY_RULES_CONFIG, RULES_FILE_NAMES } from './types.js';
 
-export { loadRules, getRulesForAgent, rulesToPromptText, isEmptyRules } from './loader.js';
+export {
+  loadRules,
+  loadRulesWithDefaults,
+  loadDefaultRules,
+  clearDefaultRulesCache,
+  getRulesForAgent,
+  rulesToPromptText,
+  isEmptyRules,
+} from './loader.js';

@@ -3,10 +3,13 @@
  *
  * Loads project-specific review rules from external directories.
  * Supports multiple rules directories with merging.
+ * Also provides built-in default rules that are always available.
  */
 
 import { readFile, access } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFileSync, existsSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse as parseYaml } from 'yaml';
 import type {
   RulesConfig,
@@ -15,6 +18,10 @@ import type {
   RuleAgentType,
 } from './types.js';
 import { EMPTY_RULES_CONFIG, RULES_FILE_NAMES } from './types.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const DEFAULTS_DIR = join(__dirname, 'defaults');
 
 /**
  * Check if a file exists
@@ -312,4 +319,123 @@ export function rulesToPromptText(rules: RulesConfig, agentType?: RuleAgentType)
  */
 export function isEmptyRules(rules: RulesConfig): boolean {
   return !rules.global && Object.keys(rules.agents).length === 0 && rules.checklist.length === 0;
+}
+
+// ============================================================================
+// Built-in Default Rules
+// ============================================================================
+
+/**
+ * Cache for loaded default rules
+ */
+let defaultRulesCache: RulesConfig | null = null;
+
+/**
+ * Read a default rule file synchronously
+ */
+function readDefaultRuleFile(filename: string): string | undefined {
+  const filePath = join(DEFAULTS_DIR, filename);
+  if (!existsSync(filePath)) {
+    return undefined;
+  }
+  try {
+    const content = readFileSync(filePath, 'utf-8');
+    return content.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Load built-in default rules
+ *
+ * These are generic, industry-standard rules that apply to all projects.
+ * They are loaded from src/review/rules/defaults/*.md
+ *
+ * @returns Default rules configuration
+ */
+export function loadDefaultRules(): RulesConfig {
+  if (defaultRulesCache) {
+    return defaultRulesCache;
+  }
+
+  const config: RulesConfig = {
+    agents: {},
+    checklist: [],
+    sources: ['built-in'],
+  };
+
+  // Load global defaults
+  config.global = readDefaultRuleFile('global.md');
+
+  // Load agent-specific defaults
+  const agentDefaults: Record<RuleAgentType, string> = {
+    'security-reviewer': 'security.md',
+    'logic-reviewer': 'logic.md',
+    'style-reviewer': 'style.md',
+    'performance-reviewer': 'performance.md',
+  };
+
+  for (const [agentType, filename] of Object.entries(agentDefaults)) {
+    const content = readDefaultRuleFile(filename);
+    if (content) {
+      config.agents[agentType as RuleAgentType] = content;
+    }
+  }
+
+  defaultRulesCache = config;
+  return config;
+}
+
+/**
+ * Clear the default rules cache (useful for testing)
+ */
+export function clearDefaultRulesCache(): void {
+  defaultRulesCache = null;
+}
+
+/**
+ * Load rules with built-in defaults
+ *
+ * This function loads rules in the following order (later rules override earlier):
+ * 1. Built-in default rules (industry-standard, generic)
+ * 2. User-provided custom rules directories
+ *
+ * @param rulesDirs - Array of directory paths to load custom rules from
+ * @param options - Loader options
+ * @returns Merged rules configuration with defaults
+ *
+ * @example
+ * ```typescript
+ * // Load with defaults + custom project rules
+ * const rules = await loadRulesWithDefaults(['./.ai-review']);
+ *
+ * // Load defaults only (no custom rules)
+ * const defaultsOnly = await loadRulesWithDefaults([]);
+ * ```
+ */
+export async function loadRulesWithDefaults(
+  rulesDirs: string[],
+  options: RulesLoaderOptions = {}
+): Promise<RulesConfig> {
+  const configs: RulesConfig[] = [];
+
+  // 1. Load built-in defaults first
+  const defaults = loadDefaultRules();
+  if (!isEmptyRules(defaults)) {
+    configs.push(defaults);
+    if (options.verbose) {
+      console.log('[RulesLoader] Loaded built-in default rules');
+    }
+  }
+
+  // 2. Load custom rules (they override defaults)
+  if (rulesDirs.length > 0) {
+    const customRules = await loadRules(rulesDirs, options);
+    if (!isEmptyRules(customRules)) {
+      configs.push(customRules);
+    }
+  }
+
+  return mergeRulesConfigs(configs);
 }
