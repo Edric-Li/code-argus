@@ -631,6 +631,7 @@ export class ReviewOrchestrator {
         maxTurns: DEFAULT_AGENT_MAX_TURNS,
         model: DEFAULT_AGENT_MODEL,
         maxThinkingTokens: DEFAULT_AGENT_MAX_THINKING_TOKENS,
+        settingSources: ['project'], // Load CLAUDE.md from repo
       },
     });
 

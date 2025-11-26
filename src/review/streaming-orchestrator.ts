@@ -165,9 +165,9 @@ export class StreamingReviewOrchestrator {
                 ? '✗'
                 : '?';
 
-          // Output validation result with full reason
+          // Output validation result with issue title for context
           this.progress.info(
-            `  └─ 验证: ${statusIcon} ${issue.validation_status}${reason ? ` | ${reason}` : ''}`
+            `  └─ [${issue.title}] 验证: ${statusIcon} ${issue.validation_status}${reason ? ` | ${reason}` : ''}`
           );
 
           this.sendStatus({
@@ -584,6 +584,7 @@ Write all text (title, description, suggestion) in Chinese.`,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           maxTurns: 30, // More turns since we're making tool calls
+          settingSources: ['project'], // Load CLAUDE.md from repo
           mcpServers: {
             'code-review-tools': mcpServer,
           },

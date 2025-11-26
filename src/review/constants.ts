@@ -39,3 +39,18 @@ export const MIN_CONFIDENCE_FOR_VALIDATION = 0.5;
  * Default concurrency for batch validation
  */
 export const DEFAULT_VALIDATION_CONCURRENCY = 3;
+
+/**
+ * Challenge mode: Use "反问确认" strategy for validation
+ * - Round 1: Initial validation
+ * - Round 2: Challenge with "你确定吗?"
+ * - Round 3 (if changed): Challenge again "你改主意了，现在确定吗?"
+ * - If two consecutive rounds agree -> result is valid
+ * - If AI keeps changing -> issue is considered valid (uncertain = exists)
+ */
+export const DEFAULT_CHALLENGE_MODE = true;
+
+/**
+ * Maximum challenge rounds before giving up
+ */
+export const MAX_CHALLENGE_ROUNDS = 3;
