@@ -54,3 +54,10 @@ export const DEFAULT_CHALLENGE_MODE = true;
  * Maximum challenge rounds before giving up
  */
 export const MAX_CHALLENGE_ROUNDS = 3;
+
+/**
+ * Maximum issues per validation group
+ * Issues from the same file are grouped together, but limited to this number per group.
+ * If a file has more issues, they are split into multiple groups.
+ */
+export const MAX_ISSUES_PER_GROUP = 5;
