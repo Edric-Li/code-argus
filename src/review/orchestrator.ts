@@ -33,7 +33,8 @@ import {
   removeWorktree,
   type WorktreeInfo,
 } from '../git/diff.js';
-import { parseDiff } from '../git/parser.js';
+import { parseDiff, type DiffFile } from '../git/parser.js';
+import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { StatusServer } from '../monitor/status-server.js';
 import { createValidator } from './validator.js';
@@ -62,6 +63,9 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   monitorPort: 3456,
   monitorStopDelay: 5000,
   showProgress: true,
+  smartAgentSelection: true,
+  disableSelectionLLM: false,
+  rulesDirs: [],
 };
 
 /**
@@ -109,8 +113,59 @@ export class ReviewOrchestrator {
         message: '正在构建审查上下文...',
       });
 
-      const context = await this.buildContext(input);
+      const { context, diffFiles } = await this.buildContext(input);
       this.progress.success(`上下文构建完成 (${context.fileAnalyses.length} 个文件)`);
+
+      // Smart agent selection (if enabled)
+      let agentsToRun = this.options.agents;
+      let selectionResult: AgentSelectionResult | null = null;
+
+      if (this.options.smartAgentSelection) {
+        this.progress.progress('智能选择 Agents...');
+        if (this.options.verbose) {
+          console.log('[Orchestrator] Running smart agent selection...');
+        }
+        this.sendStatus({
+          type: 'phase',
+          phase: 'Agent Selection',
+          message: '正在智能选择需要运行的 Agents...',
+        });
+
+        selectionResult = await selectAgents(diffFiles, {
+          verbose: this.options.verbose,
+          disableLLM: this.options.disableSelectionLLM,
+        });
+
+        agentsToRun = selectionResult.agents;
+
+        const skippedAgents = this.options.agents.filter((a) => !agentsToRun.includes(a));
+
+        // Show selection summary
+        if (skippedAgents.length > 0) {
+          this.progress.success(
+            `智能选择完成: 运行 ${agentsToRun.length} 个, 跳过 ${skippedAgents.length} 个`
+          );
+        } else {
+          this.progress.success(`智能选择完成: 运行全部 ${agentsToRun.length} 个 Agents`);
+        }
+
+        // Always show agent selection reasons (not just in verbose mode)
+        for (const agent of agentsToRun) {
+          const reason = selectionResult.reasons[agent] || '默认选择';
+          this.progress.info(`  ✓ ${agent}: ${reason}`);
+        }
+        for (const agent of skippedAgents) {
+          const reason = selectionResult.reasons[agent] || '不需要';
+          this.progress.info(`  ✗ ${agent}: ${reason}`);
+        }
+
+        if (this.options.verbose) {
+          console.log('[Orchestrator] Agent selection details:', {
+            usedLLM: selectionResult.usedLLM,
+            confidence: selectionResult.confidence,
+          });
+        }
+      }
 
       // Create worktree for review
       this.progress.progress(`创建 worktree: ${input.sourceBranch}...`);
@@ -130,11 +185,7 @@ export class ReviewOrchestrator {
 
       // Phase 2: Run specialist agents
       currentPhase++;
-      this.progress.phase(
-        currentPhase,
-        totalPhases,
-        `运行 ${this.options.agents.length} 个 Agents...`
-      );
+      this.progress.phase(currentPhase, totalPhases, `运行 ${agentsToRun.length} 个 Agents...`);
       if (this.options.verbose) {
         console.log('[Orchestrator] Running specialist agents with streaming validation...');
       }
@@ -145,7 +196,7 @@ export class ReviewOrchestrator {
       });
 
       const { validatedIssues, checklists, tokens_used } =
-        await this.runAgentsWithStreamingValidation(context);
+        await this.runAgentsWithStreamingValidation(context, agentsToRun);
       tokensUsed += tokens_used;
 
       if (this.options.verbose) {
@@ -191,7 +242,7 @@ export class ReviewOrchestrator {
       const metadata = {
         review_time_ms: Date.now() - startTime,
         tokens_used: tokensUsed,
-        agents_used: this.options.agents,
+        agents_used: agentsToRun,
       };
 
       const report = generateReport(
@@ -266,7 +317,9 @@ export class ReviewOrchestrator {
    *
    * Optimized: DiffAnalyzer + Standards run in parallel
    */
-  private async buildContext(input: OrchestratorInput): Promise<ReviewContext> {
+  private async buildContext(
+    input: OrchestratorInput
+  ): Promise<{ context: ReviewContext; diffFiles: DiffFile[] }> {
     const { sourceBranch, targetBranch, repoPath } = input;
     const remote = 'origin';
 
@@ -309,10 +362,13 @@ export class ReviewOrchestrator {
     this.progress.success('项目标准提取完成');
 
     return {
-      repoPath,
-      diff: diffResult,
-      fileAnalyses: analysisResult.changes,
-      standards,
+      context: {
+        repoPath,
+        diff: diffResult,
+        fileAnalyses: analysisResult.changes,
+        standards,
+      },
+      diffFiles,
     };
   }
 
@@ -325,7 +381,10 @@ export class ReviewOrchestrator {
    * 3. Deduplicate all issues once (before validation)
    * 4. Validate only unique issues (saves validation calls on duplicates)
    */
-  private async runAgentsWithStreamingValidation(context: ReviewContext): Promise<{
+  private async runAgentsWithStreamingValidation(
+    context: ReviewContext,
+    agentsToRun: AgentType[] = this.options.agents
+  ): Promise<{
     validatedIssues: ValidatedIssue[];
     checklists: ChecklistItem[];
     tokens_used: number;
@@ -336,17 +395,17 @@ export class ReviewOrchestrator {
     const allChecklists: ChecklistItem[] = [];
 
     // Show agents starting
-    for (const agentType of this.options.agents) {
+    for (const agentType of agentsToRun) {
       this.progress.agent(agentType, 'running');
     }
 
     // Run all agents in parallel with timing
     if (this.options.verbose) {
-      console.log(`[Orchestrator] Running ${this.options.agents.length} agents in parallel...`);
+      console.log(`[Orchestrator] Running ${agentsToRun.length} agents in parallel...`);
     }
 
     // Wrap each agent to capture its own timing
-    const agentPromises = this.options.agents.map(async (agentType) => {
+    const agentPromises = agentsToRun.map(async (agentType) => {
       const startTime = Date.now();
       try {
         const result = await this.runSingleAgent(agentType as AgentType, context, standardsText);

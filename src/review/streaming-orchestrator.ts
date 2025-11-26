@@ -30,7 +30,8 @@ import {
   removeWorktree,
   type WorktreeInfo,
 } from '../git/diff.js';
-import { parseDiff } from '../git/parser.js';
+import { parseDiff, type DiffFile } from '../git/parser.js';
+import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { StatusServer } from '../monitor/status-server.js';
 import { createIssueCollector, type IssueCollector } from './issue-collector.js';
@@ -41,6 +42,14 @@ import {
   nullProgressPrinter,
   type IProgressPrinter,
 } from '../cli/progress.js';
+import {
+  loadRules,
+  getRulesForAgent,
+  isEmptyRules,
+  type RulesConfig,
+  type RuleAgentType,
+  EMPTY_RULES_CONFIG,
+} from './rules/index.js';
 
 /**
  * Default orchestrator options
@@ -54,6 +63,9 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   monitorPort: 3456,
   monitorStopDelay: 5000,
   showProgress: true,
+  smartAgentSelection: true,
+  disableSelectionLLM: false,
+  rulesDirs: [],
 };
 
 /**
@@ -66,6 +78,7 @@ export class StreamingReviewOrchestrator {
   private statusServer?: StatusServer;
   private issueCollector?: IssueCollector;
   private progress: IProgressPrinter;
+  private rulesConfig: RulesConfig = EMPTY_RULES_CONFIG;
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -98,7 +111,82 @@ export class StreamingReviewOrchestrator {
         message: '正在构建审查上下文...',
       });
 
-      const context = await this.buildContext(input);
+      const { context, diffFiles } = await this.buildContext(input);
+
+      // Load custom rules if specified
+      if (this.options.rulesDirs.length > 0) {
+        this.progress.progress('加载自定义规则...');
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Loading rules from: ${this.options.rulesDirs.join(', ')}`
+          );
+        }
+        this.rulesConfig = await loadRules(this.options.rulesDirs, {
+          verbose: this.options.verbose,
+        });
+
+        if (!isEmptyRules(this.rulesConfig)) {
+          const agentCount = Object.keys(this.rulesConfig.agents).length;
+          const hasGlobal = this.rulesConfig.global ? 1 : 0;
+          const checklistCount = this.rulesConfig.checklist.length;
+          this.progress.success(
+            `加载自定义规则完成 (${hasGlobal} 全局, ${agentCount} 专用, ${checklistCount} checklist)`
+          );
+        } else {
+          this.progress.info('未找到自定义规则文件');
+        }
+      }
+
+      // Smart agent selection
+      let agentsToRun = this.options.agents;
+      let selectionResult: AgentSelectionResult | null = null;
+
+      if (this.options.smartAgentSelection) {
+        this.progress.progress('智能选择 Agents...');
+        if (this.options.verbose) {
+          console.log('[StreamingOrchestrator] Running smart agent selection...');
+        }
+        this.sendStatus({
+          type: 'phase',
+          phase: 'Agent Selection',
+          message: '正在智能选择需要运行的 Agents...',
+        });
+
+        selectionResult = await selectAgents(diffFiles, {
+          verbose: this.options.verbose,
+          disableLLM: this.options.disableSelectionLLM,
+        });
+
+        agentsToRun = selectionResult.agents;
+
+        const skippedAgents = this.options.agents.filter((a) => !agentsToRun.includes(a));
+
+        // Show selection summary
+        if (skippedAgents.length > 0) {
+          this.progress.success(
+            `智能选择完成: 运行 ${agentsToRun.length} 个, 跳过 ${skippedAgents.length} 个`
+          );
+        } else {
+          this.progress.success(`智能选择完成: 运行全部 ${agentsToRun.length} 个 Agents`);
+        }
+
+        // Always show agent selection reasons
+        for (const agent of agentsToRun) {
+          const reason = selectionResult.reasons[agent] || '默认选择';
+          this.progress.info(`  ✓ ${agent}: ${reason}`);
+        }
+        for (const agent of skippedAgents) {
+          const reason = selectionResult.reasons[agent] || '不需要';
+          this.progress.info(`  ✗ ${agent}: ${reason}`);
+        }
+
+        if (this.options.verbose) {
+          console.log('[StreamingOrchestrator] Agent selection details:', {
+            usedLLM: selectionResult.usedLLM,
+            confidence: selectionResult.confidence,
+          });
+        }
+      }
 
       // Create worktree for review (allows agents to read actual source code)
       this.progress.progress(`创建 worktree: ${input.sourceBranch}...`);
@@ -188,7 +276,7 @@ export class StreamingReviewOrchestrator {
       });
 
       // Phase 2: Run specialist agents with streaming issue reporting
-      this.progress.phase(2, 4, `运行 ${this.options.agents.length} 个 Agents...`);
+      this.progress.phase(2, 4, `运行 ${agentsToRun.length} 个 Agents...`);
       if (this.options.verbose) {
         console.log('[StreamingOrchestrator] Running specialist agents with streaming...');
       }
@@ -200,7 +288,8 @@ export class StreamingReviewOrchestrator {
 
       const { checklists, tokens: agentTokens } = await this.runAgentsWithStreaming(
         context,
-        reviewRepoPath
+        reviewRepoPath,
+        agentsToRun
       );
       tokensUsed += agentTokens;
 
@@ -267,7 +356,7 @@ export class StreamingReviewOrchestrator {
       const metadata = {
         review_time_ms: Date.now() - startTime,
         tokens_used: tokensUsed,
-        agents_used: this.options.agents,
+        agents_used: agentsToRun,
       };
 
       const report = generateReport(
@@ -338,7 +427,9 @@ export class StreamingReviewOrchestrator {
   /**
    * Build the review context from input
    */
-  private async buildContext(input: OrchestratorInput): Promise<ReviewContext> {
+  private async buildContext(
+    input: OrchestratorInput
+  ): Promise<{ context: ReviewContext; diffFiles: DiffFile[] }> {
     const { sourceBranch, targetBranch, repoPath } = input;
     const remote = 'origin';
 
@@ -378,10 +469,13 @@ export class StreamingReviewOrchestrator {
     this.progress.success('项目标准提取完成');
 
     return {
-      repoPath,
-      diff: diffResult,
-      fileAnalyses: analysisResult.changes,
-      standards,
+      context: {
+        repoPath,
+        diff: diffResult,
+        fileAnalyses: analysisResult.changes,
+        standards,
+      },
+      diffFiles,
     };
   }
 
@@ -390,7 +484,8 @@ export class StreamingReviewOrchestrator {
    */
   private async runAgentsWithStreaming(
     context: ReviewContext,
-    reviewRepoPath: string
+    reviewRepoPath: string,
+    agentsToRun: AgentType[] = this.options.agents
   ): Promise<{ checklists: ChecklistItem[]; tokens: number }> {
     const standardsText = standardsToText(context.standards);
     let totalTokens = 0;
@@ -400,18 +495,16 @@ export class StreamingReviewOrchestrator {
     const mcpServer = this.createReportIssueMcpServer();
 
     // Show agents starting
-    for (const agentType of this.options.agents) {
+    for (const agentType of agentsToRun) {
       this.progress.agent(agentType, 'running');
     }
 
     // Run all agents in parallel with timing
     if (this.options.verbose) {
-      console.log(
-        `[StreamingOrchestrator] Running ${this.options.agents.length} agents in parallel...`
-      );
+      console.log(`[StreamingOrchestrator] Running ${agentsToRun.length} agents in parallel...`);
     }
 
-    const agentPromises = this.options.agents.map(async (agentType) => {
+    const agentPromises = agentsToRun.map(async (agentType) => {
       const startTime = Date.now();
       try {
         const result = await this.runStreamingAgent(
@@ -559,6 +652,12 @@ Write all text (title, description, suggestion) in Chinese.`,
       details: { status: 'running' },
     });
 
+    // Get project-specific rules for this agent
+    const projectRules =
+      agentType !== 'validator'
+        ? getRulesForAgent(this.rulesConfig, agentType as RuleAgentType)
+        : undefined;
+
     // Build prompts
     const systemPrompt = buildStreamingSystemPrompt(agentType);
     const userPrompt = buildStreamingUserPrompt(agentType, {
@@ -567,6 +666,9 @@ Write all text (title, description, suggestion) in Chinese.`,
         .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
         .join('\n'),
       standardsText,
+      projectRules: projectRules
+        ? `## Project-Specific Review Guidelines\n\n> Loaded from: ${this.rulesConfig.sources.join(', ')}\n\n${projectRules}`
+        : undefined,
     });
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;

@@ -380,6 +380,21 @@ export interface OrchestratorOptions {
   monitorStopDelay?: number;
   /** Show CLI progress output (default: true) */
   showProgress?: boolean;
+  /**
+   * Enable smart agent selection based on diff content (default: false)
+   * When enabled, agents are automatically selected based on file types
+   */
+  smartAgentSelection?: boolean;
+  /**
+   * Disable LLM fallback for smart agent selection (default: false)
+   * When true, only rule-based selection is used
+   */
+  disableSelectionLLM?: boolean;
+  /**
+   * Directories containing custom review rules
+   * Rules are loaded and merged in order, with later directories taking precedence
+   */
+  rulesDirs?: string[];
 }
 
 /**

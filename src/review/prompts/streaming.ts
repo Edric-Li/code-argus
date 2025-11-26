@@ -197,6 +197,8 @@ export function buildStreamingUserPrompt(
     intentSummary?: string;
     fileAnalyses?: string;
     standardsText?: string;
+    /** Custom project-specific rules for this agent */
+    projectRules?: string;
   }
 ): string {
   const sections: string[] = [];
@@ -211,6 +213,12 @@ export function buildStreamingUserPrompt(
 
   if (params.standardsText) {
     sections.push(params.standardsText);
+    sections.push('');
+  }
+
+  // Add project-specific rules (from --rules-dir)
+  if (params.projectRules) {
+    sections.push(params.projectRules);
     sections.push('');
   }
 

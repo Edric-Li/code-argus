@@ -38,6 +38,9 @@ Options (review command):
   --language=<lang>    Output language (default: zh)
                        - zh: Chinese (中文)
                        - en: English
+  --rules-dir=<path>   Directory containing custom review rules (can be used multiple times)
+                       Expected files: global.md, security.md, logic.md, style.md,
+                       performance.md, checklist.yaml
   --skip-validation    Skip issue validation (faster but less accurate)
   --monitor            Enable real-time status monitoring UI
   --monitor-port=<num> Status monitor port (default: 3456)
@@ -50,6 +53,7 @@ Note:
 Examples:
   tsx src/index.ts analyze /path/to/repo feature/new-feature develop
   tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json --monitor
+  tsx src/index.ts review /path/to/repo feature-branch main --rules-dir ./team-rules
   npx tsx src/index.ts review /path/to/repo Alex/bugfix/bug3303 develop --monitor
   npm run dev -- review /path/to/repo Alex/bugfix/bug3303 develop --monitor
 `);
@@ -61,6 +65,7 @@ Examples:
 function parseOptions(args: string[]): {
   format: 'json' | 'markdown' | 'summary' | 'pr-comments';
   language: 'en' | 'zh';
+  rulesDirs: string[];
   skipValidation: boolean;
   monitor: boolean;
   monitorPort: number;
@@ -69,6 +74,7 @@ function parseOptions(args: string[]): {
   const options = {
     format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
     language: 'zh' as 'en' | 'zh',
+    rulesDirs: [] as string[],
     skipValidation: false,
     monitor: false,
     monitorPort: 3456,
@@ -90,6 +96,11 @@ function parseOptions(args: string[]): {
       const language = arg.split('=')[1];
       if (language === 'en' || language === 'zh') {
         options.language = language;
+      }
+    } else if (arg.startsWith('--rules-dir=')) {
+      const dir = arg.split('=')[1];
+      if (dir) {
+        options.rulesDirs.push(dir);
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
@@ -117,13 +128,16 @@ async function runReviewCommand(
   targetBranch: string,
   options: ReturnType<typeof parseOptions>
 ): Promise<void> {
+  const rulesInfo =
+    options.rulesDirs.length > 0 ? `Rules:         ${options.rulesDirs.join(', ')}` : '';
+
   console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch}
 Target Branch: ${targetBranch}
-Format:        ${options.format}
+Format:        ${options.format}${rulesInfo ? '\n' + rulesInfo : ''}
 =================================
 `);
 
@@ -136,6 +150,7 @@ Format:        ${options.format}
       skipValidation: options.skipValidation,
       monitor: options.monitor,
       monitorPort: options.monitorPort,
+      rulesDirs: options.rulesDirs,
     },
   });
 

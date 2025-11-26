@@ -74,6 +74,20 @@ export { DEFAULT_VALIDATION_STRATEGIES } from './types.js';
 // Standards extraction
 export { extractStandards, standardsToPromptText, createStandards } from './standards/index.js';
 
+// Rules loading (project-specific review guidelines)
+export {
+  loadRules,
+  getRulesForAgent,
+  rulesToPromptText,
+  isEmptyRules,
+  EMPTY_RULES_CONFIG,
+  RULES_FILE_NAMES,
+  type RulesConfig,
+  type RulesLoaderOptions,
+  type CustomChecklistItem,
+  type RuleAgentType,
+} from './rules/index.js';
+
 // Aggregator
 export {
   aggregate,
