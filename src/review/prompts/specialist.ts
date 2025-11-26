@@ -103,7 +103,24 @@ Based on the changes, pay special attention to:
 1. Naming consistency with existing code
 2. Code organization and structure
 3. Following project conventions
-4. Readability improvements`;
+4. Readability improvements
+
+## Over-Engineering Detection (过度设计检测)
+
+**IMPORTANT**: Identify cases of over-engineering. Report these as issues with category "maintainability".
+
+Signs of over-engineering to look for:
+1. **Unnecessary abstraction**: Abstractions, wrappers, or helper functions used only once
+2. **Premature generalization**: Designing for hypothetical future requirements that don't exist yet
+3. **Pattern abuse**: Using design patterns (Factory, Strategy, etc.) where simple code would suffice
+4. **Excessive configuration**: Too many config options for simple functionality
+5. **Unused interfaces**: Defining interfaces, types, or functions that are not actually used
+6. **Complex solutions for simple problems**: When 3 lines of straightforward code could replace 30 lines of "elegant" abstraction
+
+When you find over-engineering:
+- severity: "warning" or "suggestion"
+- category: "maintainability"
+- Explain why the simpler approach is better`;
 
     case 'performance-reviewer':
       return `## Focus Priority

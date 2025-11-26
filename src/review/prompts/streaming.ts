@@ -129,6 +129,20 @@ export const SPECIALIST_INSTRUCTIONS: Record<string, string> = {
 - \`destory\` → \`destroy\`
 - \`sucess\` → \`success\`
 - \`respose\` → \`response\`
+
+## Over-Engineering Detection (过度设计检测)
+
+**IMPORTANT**: Identify cases of over-engineering. Report with category "maintainability".
+
+Signs of over-engineering:
+1. **Unnecessary abstraction**: Wrappers or helpers used only once
+2. **Premature generalization**: Designing for hypothetical future needs
+3. **Pattern abuse**: Using Factory/Strategy/etc. where simple code suffices
+4. **Excessive configuration**: Too many config options for simple functionality
+5. **Unused interfaces**: Defining types/interfaces not actually used
+6. **Complex solutions for simple problems**: 30 lines of abstraction replacing 3 lines of direct code
+
+Report as: severity "warning" or "suggestion", category "maintainability"
 `,
 };
 
@@ -165,6 +179,11 @@ export const STREAMING_CHECKLISTS: Record<
     { id: 'sty-chk-02', category: 'style', question: '代码结构是否清晰？' },
     { id: 'sty-chk-03', category: 'style', question: '是否遵循项目编码规范？' },
     { id: 'sty-chk-04', category: 'maintainability', question: '是否有重复代码可以提取？' },
+    {
+      id: 'sty-chk-05',
+      category: 'maintainability',
+      question: '是否存在过度设计（不必要的抽象、模式滥用、过早泛化）？',
+    },
   ],
 };
 
