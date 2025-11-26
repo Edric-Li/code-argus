@@ -44,16 +44,19 @@ export const DEFAULT_VALIDATION_CONCURRENCY = 3;
  * Challenge mode: Use "反问确认" strategy for validation
  * - Round 1: Initial validation
  * - Round 2: Challenge with "你确定吗?"
- * - Round 3 (if changed): Challenge again "你改主意了，现在确定吗?"
+ * - Round 3 (if changed): Challenge with "请提供更具体的代码证据"
+ * - Round 4 (if changed): Devil's advocate "请考虑反面论点"
+ * - Round 5 (if changed): Final chance "最后一轮，给出最终判断"
  * - If two consecutive rounds agree -> result is valid
- * - If AI keeps changing -> issue is considered valid (uncertain = exists)
+ * - If AI keeps changing after 5 rounds -> majority vote decides
  */
 export const DEFAULT_CHALLENGE_MODE = true;
 
 /**
  * Maximum challenge rounds before giving up
+ * Supports up to 5 rounds with progressive challenge strategies
  */
-export const MAX_CHALLENGE_ROUNDS = 3;
+export const MAX_CHALLENGE_ROUNDS = 5;
 
 /**
  * Maximum issues per validation group

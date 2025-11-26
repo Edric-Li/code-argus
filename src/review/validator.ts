@@ -347,13 +347,13 @@ export class IssueValidator {
             if (currentRound >= MAX_CHALLENGE_ROUNDS) {
               if (this.options.verbose) {
                 console.log(
-                  `[Validator] Issue ${issue.id}: AI inconsistent across ${MAX_CHALLENGE_ROUNDS} rounds`
+                  `[Validator] Issue ${issue.id}: AI inconsistent across ${MAX_CHALLENGE_ROUNDS} rounds, using majority vote`
                 );
               }
               endConversation();
-              const detailedReasoning = this.buildInconsistentReasoning(responses);
+              // Use majority vote to decide final result
               return {
-                issue: this.createUncertainIssue(issue, detailedReasoning, 0.7),
+                issue: this.getFinalDecisionFromResponses(responses, issue),
                 tokensUsed: totalTokensUsed,
               };
             }
@@ -363,27 +363,19 @@ export class IssueValidator {
             const prevResponse = responses[responses.length - 1]!;
             const prevPrevResponse =
               responses.length >= 2 ? responses[responses.length - 2] : undefined;
-            const isChangedMind =
-              prevPrevResponse &&
-              prevPrevResponse.validation_status !== prevResponse.validation_status;
 
             if (this.options.verbose) {
-              if (isChangedMind) {
-                console.log(
-                  `[Validator] Issue ${issue.id}: Round ${currentRound} - AI changed mind, challenging in same session`
-                );
-              } else {
-                console.log(
-                  `[Validator] Issue ${issue.id}: Round ${currentRound} - Challenge in same session`
-                );
-              }
+              console.log(
+                `[Validator] Issue ${issue.id}: Round ${currentRound} - Challenging in same session`
+              );
             }
 
             // Build challenge prompt (simpler - no need to repeat system prompt or issue details)
+            // Pass currentRound directly to get the appropriate progressive challenge
             const challengeContent = this.buildInSessionChallengePrompt(
               issue,
               prevResponse,
-              isChangedMind ? 2 : 1,
+              currentRound,
               prevPrevResponse
             );
             sendFollowUp(challengeContent);
@@ -452,6 +444,12 @@ export class IssueValidator {
    * - Previous analysis context
    *
    * So we just need to challenge the decision.
+   *
+   * Progressive challenge strategy (5 rounds):
+   * - Round 2: Simple confirmation "你确定吗？"
+   * - Round 3: Request specific evidence "请提供更具体的代码证据"
+   * - Round 4: Devil's advocate "请考虑反面论点"
+   * - Round 5: Final decision "最后一轮，给出最终判断"
    */
   private buildInSessionChallengePrompt(
     _issue: RawIssue,
@@ -459,9 +457,12 @@ export class IssueValidator {
     round: number,
     previousPreviousResponse?: ParsedValidationResponse
   ): string {
-    if (round === 1) {
-      // First challenge - simple confirmation
-      return `你刚才的判断是 **${previousResponse.validation_status}**。
+    const prevStatus = previousResponse.validation_status;
+
+    switch (round) {
+      case 2:
+        // Round 2: Simple confirmation
+        return `你刚才的判断是 **${prevStatus}**。
 
 **请再次仔细审视并确认你的判断。你确定吗？**
 
@@ -472,15 +473,48 @@ export class IssueValidator {
 如果判断有变化，请解释原因。如果判断不变，请确认并解释为什么你确定。
 
 请输出 JSON 结果。`;
-    } else {
-      // AI changed its mind
-      return `你改变了判断:
-- 第一次: **${previousPreviousResponse!.validation_status}**
-- 第二次: **${previousResponse.validation_status}**
 
-**你改主意了。现在这个答案你确定吗？**
+      case 3: {
+        // Round 3: Request specific evidence
+        const changeNote = previousPreviousResponse
+          ? `你改变了判断: **${previousPreviousResponse.validation_status}** → **${prevStatus}**`
+          : `你的判断是 **${prevStatus}**`;
+        return `${changeNote}
 
-基于你已经阅读的代码，给出你最终的、确定的判断。
+**请提供更具体的代码证据来支持你当前的判断：**
+1. 指出具体的代码行号
+2. 说明为什么这些代码构成/不构成问题
+3. 如果有相关的上下文（如错误处理、测试覆盖），请一并说明
+
+请输出 JSON 结果。`;
+      }
+
+      case 4: {
+        // Round 4: Devil's advocate
+        const oppositeView =
+          prevStatus === 'confirmed'
+            ? '这个问题可能**不存在**的原因（如：已有防护措施、边界条件不可达、类型系统保证等）'
+            : '这个问题可能**确实存在**的原因（如：缺少校验、边界情况未处理、潜在风险等）';
+        return `你再次改变了判断。
+
+**请扮演魔鬼代言人，认真考虑${oppositeView}。**
+
+在充分考虑反面论点后，给出你经过深思熟虑的判断。
+
+请输出 JSON 结果。`;
+      }
+
+      case 5:
+      default:
+        // Round 5: Final decision
+        return `你在多轮验证中反复改变判断。
+
+**这是最后一轮。请基于你已读取的所有代码证据，给出你最终的、不可更改的判断。**
+
+注意：
+- 如果证据充分支持问题存在，请判定 confirmed
+- 如果证据明确表明问题不存在，请判定 rejected
+- 如果你仍然无法确定，请明确输出 uncertain
 
 请输出 JSON 结果。`;
     }
@@ -490,7 +524,7 @@ export class IssueValidator {
    * Build detailed reasoning when AI is inconsistent across rounds
    */
   private buildInconsistentReasoning(responses: ParsedValidationResponse[]): string {
-    const roundLabels = ['第一轮', '第二轮', '第三轮'];
+    const roundLabels = ['第一轮', '第二轮', '第三轮', '第四轮', '第五轮'];
     const summaries = responses.map((r, i) => {
       const label = roundLabels[i] || `第${i + 1}轮`;
       const status = r.validation_status;
@@ -503,6 +537,83 @@ export class IssueValidator {
     });
 
     return `AI判断不一致，建议人工审查:\n${summaries.join('\n')}`;
+  }
+
+  /**
+   * Get final decision from multiple inconsistent responses using majority vote
+   *
+   * Decision rules:
+   * 1. If any two consecutive rounds agree -> use that result (handled elsewhere)
+   * 2. After MAX_CHALLENGE_ROUNDS with inconsistency -> majority vote:
+   *    - 3+ confirmed -> confirmed (with reduced confidence)
+   *    - 3+ rejected -> rejected (with reduced confidence)
+   *    - Otherwise -> uncertain (recommend manual review)
+   */
+  private getFinalDecisionFromResponses(
+    responses: ParsedValidationResponse[],
+    originalIssue: RawIssue
+  ): ValidatedIssue {
+    // Count occurrences of each status
+    const counts = {
+      confirmed: 0,
+      rejected: 0,
+      uncertain: 0,
+    };
+
+    for (const r of responses) {
+      counts[r.validation_status]++;
+    }
+
+    // Majority vote
+    const total = responses.length;
+    const majorityThreshold = Math.ceil(total / 2);
+    let finalStatus: 'confirmed' | 'rejected' | 'uncertain';
+    let confidencePenalty = 0.3; // Reduce confidence due to inconsistency
+
+    if (counts.confirmed >= majorityThreshold) {
+      finalStatus = 'confirmed';
+    } else if (counts.rejected >= majorityThreshold) {
+      finalStatus = 'rejected';
+    } else {
+      finalStatus = 'uncertain';
+      confidencePenalty = 0.4; // Higher penalty for truly uncertain cases
+    }
+
+    const lastResponse = responses[responses.length - 1]!;
+    const detailedReasoning = this.buildInconsistentReasoning(responses);
+
+    // Build vote summary
+    const voteSummary = `[多数投票: ${counts.confirmed}确认/${counts.rejected}拒绝/${counts.uncertain}不确定]`;
+
+    // Merge checked files and symbols from all rounds
+    const allCheckedFiles = [
+      ...new Set(responses.flatMap((r) => r.grounding_evidence.checked_files)),
+    ];
+    const allCheckedSymbols = responses
+      .flatMap((r) => r.grounding_evidence.checked_symbols)
+      .filter(
+        (sym, idx, arr) =>
+          arr.findIndex(
+            (s) =>
+              (typeof s === 'string' ? s : s.name) === (typeof sym === 'string' ? sym : sym.name)
+          ) === idx
+      )
+      .map((sym) =>
+        typeof sym === 'string' ? { name: sym, type: 'reference' as const, locations: [] } : sym
+      );
+
+    return {
+      ...originalIssue,
+      validation_status: finalStatus,
+      grounding_evidence: {
+        checked_files: allCheckedFiles,
+        checked_symbols: allCheckedSymbols,
+        related_context: lastResponse.grounding_evidence.related_context,
+        reasoning: `${voteSummary} ${detailedReasoning}`,
+      },
+      final_confidence: Math.max(0.3, lastResponse.final_confidence - confidencePenalty),
+      rejection_reason: finalStatus === 'rejected' ? lastResponse.rejection_reason : undefined,
+    };
   }
 
   /**
@@ -850,15 +961,27 @@ export class IssueValidator {
 
             if (currentRound >= MAX_CHALLENGE_ROUNDS) {
               if (this.options.verbose) {
-                console.log(`[Validator] Group inconsistent across ${MAX_CHALLENGE_ROUNDS} rounds`);
+                console.log(
+                  `[Validator] Group inconsistent across ${MAX_CHALLENGE_ROUNDS} rounds, using majority vote`
+                );
               }
               endConversation();
-              return issues.map((issue, idx) => ({
-                issue: roundResponses[idx]
-                  ? this.responseToValidatedIssue(roundResponses[idx]!, issue, 'AI判断不一致')
-                  : this.createUncertainIssue(issue, 'AI判断不一致', 0.7),
-                tokensUsed: idx === 0 ? totalTokensUsed : 0,
-              }));
+              // Use majority vote for each issue in the group
+              return issues.map((issue, idx) => {
+                const issueResponses = allResponses
+                  .map((round) => round[idx])
+                  .filter(Boolean) as ParsedValidationResponse[];
+                if (issueResponses.length > 0) {
+                  return {
+                    issue: this.getFinalDecisionFromResponses(issueResponses, issue),
+                    tokensUsed: idx === 0 ? totalTokensUsed : 0,
+                  };
+                }
+                return {
+                  issue: this.createUncertainIssue(issue, 'AI判断不一致', 0.7),
+                  tokensUsed: idx === 0 ? totalTokensUsed : 0,
+                };
+              });
             }
 
             // Send challenge
@@ -986,6 +1109,12 @@ ${issueDescriptions}
 
   /**
    * Build challenge prompt for group validation
+   *
+   * Progressive challenge strategy (5 rounds):
+   * - Round 2: Simple confirmation
+   * - Round 3: Request specific evidence
+   * - Round 4: Devil's advocate
+   * - Round 5: Final decision
    */
   private buildGroupChallengePrompt(
     issues: RawIssue[],
@@ -999,23 +1128,55 @@ ${issueDescriptions}
       })
       .join('\n');
 
-    if (round === 2) {
-      return `你刚才的判断是:
+    const issueCount = issues.length;
+
+    switch (round) {
+      case 2:
+        // Round 2: Simple confirmation
+        return `你刚才的判断是:
 ${summaries}
 
 **请再次仔细审视并确认你的判断。你确定吗？**
 
 基于你已经阅读的代码，重新考虑每个问题。如果判断有变化，请解释原因。
 
-请输出 JSON 结果（包含所有 ${issues.length} 个问题的验证结果）。`;
-    } else {
-      return `你改变了部分判断。
+请输出 JSON 结果（包含所有 ${issueCount} 个问题的验证结果）。`;
 
-**现在这些答案你确定吗？**
+      case 3:
+        // Round 3: Request specific evidence
+        return `你改变了部分判断。
 
-基于你已经阅读的代码，给出你最终的、确定的判断。
+**请为每个问题提供更具体的代码证据：**
+1. 指出具体的代码行号
+2. 说明为什么这些代码构成/不构成问题
 
-请输出 JSON 结果（包含所有 ${issues.length} 个问题的验证结果）。`;
+请输出 JSON 结果（包含所有 ${issueCount} 个问题的验证结果）。`;
+
+      case 4:
+        // Round 4: Devil's advocate
+        return `你再次改变了判断。
+
+**请扮演魔鬼代言人：**
+- 对于你判定为 confirmed 的问题，考虑它可能不存在的原因
+- 对于你判定为 rejected 的问题，考虑它可能确实存在的原因
+
+在充分考虑反面论点后，给出你经过深思熟虑的判断。
+
+请输出 JSON 结果（包含所有 ${issueCount} 个问题的验证结果）。`;
+
+      case 5:
+      default:
+        // Round 5: Final decision
+        return `你在多轮验证中反复改变判断。
+
+**这是最后一轮。请基于你已读取的所有代码证据，给出你最终的、不可更改的判断。**
+
+注意：
+- 如果证据充分支持问题存在，请判定 confirmed
+- 如果证据明确表明问题不存在，请判定 rejected
+- 如果你仍然无法确定，请明确输出 uncertain
+
+请输出 JSON 结果（包含所有 ${issueCount} 个问题的验证结果）。`;
     }
   }
 
