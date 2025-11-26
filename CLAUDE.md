@@ -131,7 +131,7 @@ Agent 定义在 `.claude/agents/` 目录：
 ### 配置
 
 - **LLM 提供者**：设置 `LLM_PROVIDER=claude|openai` 及对应 API 密钥
-- **Agent 模型**：`claude-sonnet-4-20250514`（可在 `constants.ts` 配置）
+- **Agent 模型**：`claude-sonnet-4-5-20250929`（可在 `constants.ts` 配置）
 - **验证模式**：默认启用挑战模式（`DEFAULT_CHALLENGE_MODE=true`）
 
 ## 核心类型

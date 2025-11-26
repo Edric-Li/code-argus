@@ -432,7 +432,7 @@ ${diffFiles.length > 30 ? `\n... 还有 ${diffFiles.length - 30} 个文件` : ''
 
   try {
     const response = await client.messages.create({
-      model: 'claude-sonnet-4-5-20250514',
+      model: 'claude-sonnet-4-5-20250929',
       max_tokens: 500,
       messages: [{ role: 'user', content: prompt }],
     });

@@ -11,7 +11,7 @@ export const DEFAULT_DEDUP_MODEL = 'claude-3-5-haiku-20241022';
  * Default model for specialist agents
  * Using Sonnet for balanced speed/quality (no extended thinking needed for code review)
  */
-export const DEFAULT_AGENT_MODEL = 'claude-sonnet-4-20250514';
+export const DEFAULT_AGENT_MODEL = 'claude-sonnet-4-5-20250929';
 
 /**
  * Max thinking tokens for agents (0 = disable extended thinking)
