@@ -39,6 +39,7 @@ import { StatusServer } from '../monitor/status-server.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
+import { DEFAULT_AGENT_MODEL } from './constants.js';
 import {
   createProgressPrinter,
   nullProgressPrinter,
@@ -716,6 +717,7 @@ Write all text (title, description, suggestion) in Chinese.`,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
           maxTurns: 30, // More turns since we're making tool calls
+          model: DEFAULT_AGENT_MODEL,
           settingSources: ['project'], // Load CLAUDE.md from repo
           mcpServers: {
             'code-review-tools': mcpServer,

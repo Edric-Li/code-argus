@@ -22,7 +22,7 @@ export interface ClaudeProviderConfig extends LLMProviderConfig {
 /**
  * Default Claude model
  */
-const DEFAULT_CLAUDE_MODEL = 'claude-sonnet-4-5-20250929';
+const DEFAULT_CLAUDE_MODEL = 'claude-opus-4-5-20251101';
 
 /**
  * ClaudeProvider - Implementation for Anthropic Claude API
