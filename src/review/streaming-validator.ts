@@ -24,6 +24,7 @@ import {
   DEFAULT_CHALLENGE_MODE,
   MAX_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
+  DEFAULT_AGENT_MODEL,
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
@@ -495,6 +496,7 @@ export class StreamingValidator {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         maxTurns: this.options.maxTurns,
+        model: DEFAULT_AGENT_MODEL,
         settingSources: ['project'],
       },
     });

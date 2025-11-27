@@ -83,6 +83,7 @@ export class StreamingReviewOrchestrator {
   private progress: IProgressPrinter;
   private rulesConfig: RulesConfig = EMPTY_RULES_CONFIG;
   private autoRejectedIssues: ValidatedIssue[] = [];
+  private rawIssuesForSkipMode: RawIssue[] = [];
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -213,8 +214,9 @@ export class StreamingReviewOrchestrator {
       // Update context to use worktree path for agent execution
       const reviewRepoPath = worktreeInfo.worktreePath;
 
-      // Reset auto-rejected issues for this review
+      // Reset state for this review
       this.autoRejectedIssues = [];
+      this.rawIssuesForSkipMode = [];
 
       // Create streaming validator with progress callbacks
       this.streamingValidator = this.options.skipValidation
@@ -310,9 +312,7 @@ export class StreamingReviewOrchestrator {
         });
       } else if (this.options.skipValidation) {
         // Skip validation mode - convert raw issues to validated without actual validation
-        const rawIssues =
-          (this as unknown as { _rawIssuesForSkipMode?: RawIssue[] })._rawIssuesForSkipMode || [];
-        validatedIssues = rawIssues.map((issue) => ({
+        validatedIssues = this.rawIssuesForSkipMode.map((issue) => ({
           ...issue,
           validation_status: 'pending' as const,
           grounding_evidence: {
@@ -578,11 +578,6 @@ export class StreamingReviewOrchestrator {
     const validator = this.streamingValidator;
     const verbose = this.options.verbose;
     const skipValidation = this.options.skipValidation;
-    const rawIssuesForSkipMode: RawIssue[] = [];
-
-    // Store ref for accessing from outside (for skipValidation mode)
-    (this as unknown as { _rawIssuesForSkipMode: RawIssue[] })._rawIssuesForSkipMode =
-      rawIssuesForSkipMode;
 
     // We need to track which agent is calling, so we'll create per-agent servers
     return (agentType: AgentType) =>
@@ -636,7 +631,7 @@ Write all text (title, description, suggestion) in Chinese.`,
 
               if (skipValidation) {
                 // Skip validation mode - just collect issues
-                rawIssuesForSkipMode.push(rawIssue);
+                this.rawIssuesForSkipMode.push(rawIssue);
                 return {
                   content: [
                     { type: 'text' as const, text: `✓ 问题已接收 (ID: ${issueId})\n跳过验证模式` },
