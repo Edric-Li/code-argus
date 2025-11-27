@@ -53,7 +53,9 @@ npm run dev -- <command> <repoPath> <sourceBranch> <targetBranch> [options]
 | ---------------------- | -------------------------------------------------------------- |
 | `--format=<format>`    | 输出格式：`json`、`markdown`（默认）、`summary`、`pr-comments` |
 | `--language=<lang>`    | 输出语言：`zh`（默认）、`en`                                   |
+| `--config-dir=<path>`  | 配置目录，自动加载 `rules/` 和 `agents/` 子目录（推荐）        |
 | `--rules-dir=<path>`   | 自定义规则目录（可多次使用）                                   |
+| `--agents-dir=<path>`  | 自定义 Agent 目录（可多次使用）                                |
 | `--skip-validation`    | 跳过问题验证（更快但准确性降低）                               |
 | `--monitor`            | 启用实时状态监控 UI                                            |
 | `--monitor-port=<num>` | 监控端口（默认 3456）                                          |
@@ -71,8 +73,11 @@ npm run dev -- review /path/to/repo feature-branch main
 # 指定输出格式和语言
 npm run dev -- review /path/to/repo feature-branch main --format=json --language=en
 
-# 使用自定义规则 + 实时监控
-npm run dev -- review /path/to/repo feature-branch main --rules-dir=./team-rules --monitor
+# 使用配置目录（自动加载 rules/ 和 agents/）
+npm run dev -- review /path/to/repo feature-branch main --config-dir=./.ai-review --monitor
+
+# 分别指定规则和 Agent 目录
+npm run dev -- review /path/to/repo feature-branch main --rules-dir=./rules --agents-dir=./agents
 
 # 快速审查（跳过验证）
 npm run dev -- review /path/to/repo feature-branch main --skip-validation
@@ -125,21 +130,47 @@ src/
 - **tsx** - 快速执行 TypeScript
 - **Node.js 22+** - 最新 Node.js 特性
 
-## 自定义规则
+## 自定义配置
 
-通过 `--rules-dir` 指定目录，支持以下文件：
+推荐使用 `--config-dir` 指定配置目录，自动加载 `rules/` 和 `agents/` 子目录：
 
 ```
-team-rules/
-├── global.md        # 全局规则（应用于所有 Agent）
-├── security.md      # 安全审查规则
-├── logic.md         # 逻辑审查规则
-├── style.md         # 风格审查规则
-├── performance.md   # 性能审查规则
-└── checklist.yaml   # 自定义检查清单
+.ai-review/
+├── rules/              # 补充内置 Agent 的规则
+│   ├── global.md       # 全局规则（应用于所有 Agent）
+│   ├── security.md     # 安全审查规则
+│   ├── logic.md        # 逻辑审查规则
+│   ├── style.md        # 风格审查规则
+│   ├── performance.md  # 性能审查规则
+│   └── checklist.yaml  # 自定义检查清单
+└── agents/             # 自定义 Agent（领域专项审查）
+    ├── component-plugin.yaml   # 组件插件审查
+    └── api-security.yaml       # API 安全审查
 ```
 
-多个规则目录会按顺序合并，后面的覆盖前面的。
+### Rules（规则）
+
+补充内置 4 个 Agent 的规则，使用 Markdown 格式。
+
+### Agents（自定义 Agent）
+
+独立的领域审查 Agent，使用 YAML 定义，支持自定义触发条件：
+
+```yaml
+name: my-custom-agent
+description: 描述功能
+trigger_mode: rule # rule | llm | hybrid
+triggers:
+  files: ['**/*.ts']
+  exclude_files: ['**/*.test.ts']
+prompt: |
+  审查指南...
+output:
+  category: logic
+  default_severity: error
+```
+
+多个配置目录会按顺序合并，后面的覆盖前面的。
 
 ## 开发命令
 

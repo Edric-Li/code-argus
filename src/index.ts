@@ -42,6 +42,10 @@ Options (review command):
   --language=<lang>    Output language (default: zh)
                        - zh: Chinese (中文)
                        - en: English
+  --config-dir=<path>  Directory containing review configuration (recommended)
+                       Auto-loads rules/ and agents/ subdirectories:
+                         <path>/rules/   - Custom review rules (*.md)
+                         <path>/agents/  - Custom agent definitions (*.yaml)
   --rules-dir=<path>   Directory containing custom review rules (can be used multiple times)
                        Expected files: global.md, security.md, logic.md, style.md,
                        performance.md, checklist.yaml
@@ -59,8 +63,8 @@ Note:
 Examples:
   tsx src/index.ts analyze /path/to/repo feature/new-feature develop
   tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json --monitor
-  tsx src/index.ts review /path/to/repo feature-branch main --rules-dir ./team-rules
-  tsx src/index.ts review /path/to/repo feature-branch main --agents-dir ./custom-agents
+  tsx src/index.ts review /path/to/repo feature-branch main --config-dir ./.ai-review
+  tsx src/index.ts review /path/to/repo feature-branch main --rules-dir ./rules --agents-dir ./agents
   npx tsx src/index.ts review /path/to/repo Alex/bugfix/bug3303 develop --monitor
   npm run dev -- review /path/to/repo Alex/bugfix/bug3303 develop --monitor
 `);
@@ -72,6 +76,7 @@ Examples:
 function parseOptions(args: string[]): {
   format: 'json' | 'markdown' | 'summary' | 'pr-comments';
   language: 'en' | 'zh';
+  configDirs: string[];
   rulesDirs: string[];
   customAgentsDirs: string[];
   skipValidation: boolean;
@@ -82,6 +87,7 @@ function parseOptions(args: string[]): {
   const options = {
     format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
     language: 'zh' as 'en' | 'zh',
+    configDirs: [] as string[],
     rulesDirs: [] as string[],
     customAgentsDirs: [] as string[],
     skipValidation: false,
@@ -105,6 +111,11 @@ function parseOptions(args: string[]): {
       const language = arg.split('=')[1];
       if (language === 'en' || language === 'zh') {
         options.language = language;
+      }
+    } else if (arg.startsWith('--config-dir=')) {
+      const dir = arg.split('=')[1];
+      if (dir) {
+        options.configDirs.push(dir);
       }
     } else if (arg.startsWith('--rules-dir=')) {
       const dir = arg.split('=')[1];
@@ -130,6 +141,12 @@ function parseOptions(args: string[]): {
     }
   }
 
+  // Expand config-dir into rules-dir and agents-dir
+  for (const configDir of options.configDirs) {
+    options.rulesDirs.push(`${configDir}/rules`);
+    options.customAgentsDirs.push(`${configDir}/agents`);
+  }
+
   return options;
 }
 
@@ -142,6 +159,8 @@ async function runReviewCommand(
   targetBranch: string,
   options: ReturnType<typeof parseOptions>
 ): Promise<void> {
+  const configInfo =
+    options.configDirs.length > 0 ? `Config:        ${options.configDirs.join(', ')}` : '';
   const rulesInfo =
     options.rulesDirs.length > 0 ? `Rules:         ${options.rulesDirs.join(', ')}` : '';
   const agentsInfo =
@@ -155,7 +174,7 @@ async function runReviewCommand(
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch}
 Target Branch: ${targetBranch}
-Format:        ${options.format}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
+Format:        ${options.format}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
 
