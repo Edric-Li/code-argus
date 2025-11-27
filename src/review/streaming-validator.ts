@@ -800,6 +800,13 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
         return s;
       });
 
+      // Validate revised_severity if present
+      const validSeverities = ['critical', 'error', 'warning', 'suggestion'];
+      const revisedSeverity =
+        parsed.revised_severity && validSeverities.includes(parsed.revised_severity)
+          ? (parsed.revised_severity as 'critical' | 'error' | 'warning' | 'suggestion')
+          : undefined;
+
       return {
         validation_status: parsed.validation_status,
         final_confidence: parsed.final_confidence ?? 0.5,
@@ -811,7 +818,7 @@ ${issue.code_snippet ? `**代码片段**:\n\`\`\`\n${issue.code_snippet}\n\`\`\`
         },
         rejection_reason: parsed.rejection_reason,
         revised_description: parsed.revised_description,
-        revised_severity: parsed.revised_severity,
+        revised_severity: revisedSeverity,
       };
     } catch {
       return null;
