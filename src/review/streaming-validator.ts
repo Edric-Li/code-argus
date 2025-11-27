@@ -684,38 +684,12 @@ export class StreamingValidator {
   // ============ Helper Methods ============
 
   /**
-   * Get maximum challenge rounds for an issue based on severity and confidence
+   * Get maximum challenge rounds for an issue
    *
-   * Smart challenge strategy:
-   * - Critical issues: Full 5 rounds (most thorough)
-   * - Error issues: 3 rounds
-   * - Warning issues with low confidence: 2 rounds
-   * - Warning issues with high confidence (>0.85): 1 round only
-   * - Suggestion issues: 1 round only
+   * All issues use the same number of rounds for consistent validation quality.
    */
-  private getMaxRoundsForIssue(issue: RawIssue): number {
-    // Critical issues need thorough validation
-    if (issue.severity === 'critical') {
-      return MAX_CHALLENGE_ROUNDS; // 5 rounds
-    }
-
-    // Error severity: moderate challenge
-    if (issue.severity === 'error') {
-      return 3;
-    }
-
-    // High confidence issues don't need much challenge
-    if (issue.confidence > 0.85) {
-      return 1;
-    }
-
-    // Warning with lower confidence: light challenge
-    if (issue.severity === 'warning') {
-      return 2;
-    }
-
-    // Suggestions: single pass
-    return 1;
+  private getMaxRoundsForIssue(_issue: RawIssue): number {
+    return MAX_CHALLENGE_ROUNDS;
   }
 
   private buildUserPrompt(issue: RawIssue): string {
