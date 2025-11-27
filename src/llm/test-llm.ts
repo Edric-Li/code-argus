@@ -12,7 +12,7 @@ async function testConnection() {
   const provider = llm.getProvider();
   console.log(`Provider: ${provider.name}`);
   console.log(`Model: ${provider.model}`);
-  console.log(`Base URL: ${process.env['CLAUDE_BASE_URL'] ?? 'default'}\n`);
+  console.log(`Base URL: ${process.env['ANTHROPIC_BASE_URL'] ?? 'default'}\n`);
 
   const connected = await llm.testConnection();
   console.log(`Connection: ${connected ? '✅ Success' : '❌ Failed'}\n`);
