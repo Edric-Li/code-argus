@@ -42,6 +42,13 @@ export interface IProgressPrinter {
   issueDiscovered(title: string, file: string, severity: string): void;
   issueValidated(title: string, status: ValidationStatusType, reason?: string): void;
   autoRejected(title: string, reason: string): void;
+  validationRound(
+    title: string,
+    round: number,
+    maxRounds: number,
+    status: ValidationStatusType
+  ): void;
+  validationActivity(title: string, activity: string): void;
   validationSummary(stats: {
     total: number;
     confirmed: number;
@@ -346,6 +353,35 @@ export class ProgressPrinter implements IProgressPrinter {
   }
 
   /**
+   * Print validation round progress (real-time)
+   */
+  validationRound(
+    title: string,
+    round: number,
+    maxRounds: number,
+    status: ValidationStatusType
+  ): void {
+    const statusIcon =
+      status === 'confirmed'
+        ? this.c('green', '✓')
+        : status === 'rejected'
+          ? this.c('red', '✗')
+          : this.c('yellow', '?');
+    const truncatedTitle = title.length > 30 ? title.substring(0, 30) + '...' : title;
+    const msg = `验证 [${round}/${maxRounds}] ${statusIcon} ${truncatedTitle}`;
+    this.progress(msg);
+  }
+
+  /**
+   * Print validation activity (heartbeat)
+   */
+  validationActivity(title: string, activity: string): void {
+    const truncatedTitle = title.length > 25 ? title.substring(0, 25) + '...' : title;
+    const msg = `${truncatedTitle} ${this.c('gray', activity)}`;
+    this.progress(msg);
+  }
+
+  /**
    * Print validation summary
    */
   validationSummary(stats: {
@@ -402,5 +438,7 @@ export const nullProgressPrinter: IProgressPrinter = {
   issueDiscovered: () => {},
   issueValidated: () => {},
   autoRejected: () => {},
+  validationRound: () => {},
+  validationActivity: () => {},
   validationSummary: () => {},
 };

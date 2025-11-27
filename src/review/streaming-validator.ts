@@ -29,6 +29,9 @@ import {
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
 
+/** Maximum number of times to retry a crashed session */
+const MAX_SESSION_CRASH_RETRIES = 2;
+
 /**
  * Progress callback for streaming validation (legacy)
  */
@@ -49,6 +52,16 @@ export interface StreamingValidationCallbacks {
   onIssueValidated?: (issue: ValidatedIssue) => void;
   /** Called when an issue is auto-rejected */
   onAutoRejected?: (issue: RawIssue, reason: string) => void;
+  /** Called when validation round completes for an issue */
+  onRoundComplete?: (
+    issueId: string,
+    issueTitle: string,
+    round: number,
+    maxRounds: number,
+    status: ValidationStatus
+  ) => void;
+  /** Called periodically to show validation is still active (heartbeat) */
+  onValidationActivity?: (issueId: string, issueTitle: string, activity: string) => void;
 }
 
 /**
@@ -126,6 +139,8 @@ interface FileSession {
   processingPromise?: Promise<void>;
   /** Function to signal new issue added */
   notifyNewIssue?: () => void;
+  /** Number of crash retries for this session */
+  crashRetryCount?: number;
 }
 
 /**
@@ -246,18 +261,58 @@ export class StreamingValidator {
 
   /**
    * Wait for all validation to complete and return results
+   * @param timeoutMs Optional timeout in milliseconds (default: 10 minutes)
    */
-  async flush(): Promise<{ issues: ValidatedIssue[]; tokensUsed: number }> {
+  async flush(
+    timeoutMs: number = 600000
+  ): Promise<{ issues: ValidatedIssue[]; tokensUsed: number }> {
     this.markAgentsComplete();
 
-    // Wait for all sessions to complete
-    const sessionPromises = Array.from(this.sessions.values())
-      .filter((s) => s.processingPromise)
-      .map((s) => s.processingPromise);
+    const startTime = Date.now();
 
-    await Promise.all(sessionPromises);
+    // Wait for all sessions to complete, including any recovery sessions
+    // We need to loop because recovery sessions may be started during waiting
+    while (true) {
+      const activeSessions = Array.from(this.sessions.values()).filter(
+        (s) => s.processingPromise && !s.isClosed
+      );
 
-    // Collect all results
+      if (activeSessions.length === 0) {
+        break;
+      }
+
+      // Check timeout before waiting
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= timeoutMs) {
+        console.warn(
+          `[StreamingValidator] Flush timed out after ${timeoutMs / 1000}s. Returning partial results.`
+        );
+        break;
+      }
+
+      // Wait for current active sessions with remaining timeout
+      const remainingTimeout = timeoutMs - elapsed;
+      const timeoutPromise = new Promise<'timeout'>((resolve) => {
+        globalThis.setTimeout(() => resolve('timeout'), remainingTimeout);
+      });
+
+      const sessionPromises = activeSessions.map((s) => s.processingPromise);
+
+      const result = await Promise.race([
+        Promise.all(sessionPromises).then(() => 'complete' as const),
+        timeoutPromise,
+      ]);
+
+      if (result === 'timeout') {
+        // Timeout during wait - don't print again, just break
+        break;
+      }
+
+      // After sessions complete, check if any recovery sessions were started
+      // The loop will continue if there are new active sessions
+    }
+
+    // Collect all results (including partial if timed out)
     const allIssues: ValidatedIssue[] = [];
     let totalTokens = 0;
 
@@ -513,6 +568,23 @@ export class StreamingValidator {
           sessionId = message.session_id;
         }
 
+        // Notify activity for heartbeat (shows validation is still running)
+        if (currentIssue && message.type) {
+          let activity = '';
+          if (message.type === 'assistant') {
+            activity = `第${currentRound}轮分析中...`;
+          } else if (message.type === 'tool_progress') {
+            activity = `第${currentRound}轮读取代码...`;
+          }
+          if (activity) {
+            this.options.callbacks?.onValidationActivity?.(
+              currentIssue.id,
+              currentIssue.title,
+              activity
+            );
+          }
+        }
+
         // Collect assistant text
         if (message.type === 'assistant') {
           const assistantMsg = message as SDKAssistantMessage;
@@ -548,15 +620,26 @@ export class StreamingValidator {
             } else {
               currentResponses.push(response);
 
+              // Check if challenge mode should continue
+              const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
+
+              // Notify round completion
+              this.options.callbacks?.onRoundComplete?.(
+                currentIssue!.id,
+                currentIssue!.title,
+                currentRound,
+                maxRoundsForThisIssue,
+                response.validation_status
+              );
+
               if (this.options.verbose) {
                 console.log(
-                  `[StreamingValidator] ${currentIssue!.id} Round ${currentRound}: ${response.validation_status}`
+                  `[StreamingValidator] ${currentIssue!.id} Round ${currentRound}/${maxRoundsForThisIssue}: ${response.validation_status}`
                 );
               }
 
-              // Check if challenge mode should continue (smart challenge strategy)
+              // Check if challenge mode should continue
               let shouldContinueChallenge = false;
-              const maxRoundsForThisIssue = this.getMaxRoundsForIssue(currentIssue!);
 
               if (this.options.challengeMode && currentRound < maxRoundsForThisIssue) {
                 if (currentRound >= 2) {
@@ -650,24 +733,66 @@ export class StreamingValidator {
     } catch (error) {
       console.error(`[StreamingValidator] Session ${session.file} exception:`, error);
 
+      // Collect issues that need retry
+      const issuesToRetry: RawIssue[] = [];
+
+      // Current issue needs retry if no valid response yet
       if (currentIssue) {
         if (currentResponses.length > 0) {
+          // Had some responses, use the last one
           completeCurrentIssue(
             this.responseToValidatedIssue(
               currentResponses[currentResponses.length - 1]!,
               currentIssue,
-              '验证异常'
+              '验证异常(部分完成)'
             )
           );
         } else {
-          completeCurrentIssue(this.createUncertainIssue(currentIssue, '验证异常'));
+          // No responses yet, queue for retry
+          issuesToRetry.push(currentIssue);
         }
       }
 
-      // Complete remaining queued issues as uncertain
+      // Collect remaining queued issues for retry
       while (session.queue.length > 0) {
-        const issue = session.queue.shift()!;
-        completeCurrentIssue(this.createUncertainIssue(issue, '会话异常终止'));
+        issuesToRetry.push(session.queue.shift()!);
+      }
+
+      // Check if we should retry
+      const retryCount = session.crashRetryCount ?? 0;
+      if (issuesToRetry.length > 0 && retryCount < MAX_SESSION_CRASH_RETRIES) {
+        console.log(
+          `[StreamingValidator] Session ${session.file} crashed, attempting recovery (retry ${retryCount + 1}/${MAX_SESSION_CRASH_RETRIES})`
+        );
+
+        // Mark session as closed
+        session.isProcessing = false;
+        session.isClosed = true;
+
+        // Start a new recovery session
+        this.startRecoverySession(session.file, issuesToRetry, retryCount + 1);
+        return;
+      }
+
+      // Max retries exceeded, mark remaining as uncertain
+      if (issuesToRetry.length > 0) {
+        console.warn(
+          `[StreamingValidator] Session ${session.file} max retries exceeded, marking ${issuesToRetry.length} issues as uncertain`
+        );
+        for (const issue of issuesToRetry) {
+          const uncertainIssue = this.createUncertainIssue(issue, '会话崩溃且重试失败');
+          session.results.push(uncertainIssue);
+          this.completedCount++;
+          this.options.callbacks?.onIssueValidated?.(uncertainIssue);
+          if (this.options.onProgress) {
+            this.options.onProgress(
+              this.completedCount,
+              this.totalEnqueued,
+              uncertainIssue.id,
+              'uncertain'
+            );
+          }
+        }
       }
     }
 
@@ -679,6 +804,35 @@ export class StreamingValidator {
         `[StreamingValidator] Session ${session.file} closed: ${session.results.length} issues, ${session.tokensUsed} tokens`
       );
     }
+  }
+
+  /**
+   * Start a recovery session to retry failed issues
+   */
+  private startRecoverySession(file: string, issues: RawIssue[], retryCount: number): void {
+    // Create a new session for recovery
+    const recoverySession: FileSession = {
+      file,
+      queue: issues,
+      isProcessing: false,
+      isClosed: false,
+      tokensUsed: 0,
+      results: [],
+      crashRetryCount: retryCount,
+    };
+
+    // Replace the old session
+    const oldSession = this.sessions.get(file);
+    if (oldSession) {
+      // Preserve results from old session
+      recoverySession.results = [...oldSession.results];
+      recoverySession.tokensUsed = oldSession.tokensUsed;
+    }
+
+    this.sessions.set(file, recoverySession);
+
+    // Start processing the recovery session
+    this.startSessionProcessing(recoverySession);
   }
 
   // ============ Helper Methods ============
