@@ -17,58 +17,231 @@ import { getPRCommits } from './git/commits.js';
 import { createDiffAnalyzer } from './analyzer/index.js';
 import { analyzeIntent, filterCommits } from './intent/index.js';
 import { review, formatReport } from './review/index.js';
+import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
 
 /**
  * Print usage information
  */
 function printUsage(): void {
   console.log(`
-Usage: tsx src/index.ts <command> <repoPath> <sourceBranch> <targetBranch> [options]
+Usage: argus <command> [options]
 
 Commands:
-  analyze   Run diff analysis and intent detection (default)
-  review    Run full AI code review with multiple agents
+  analyze <repo> <source> <target>   Run diff analysis and intent detection
+  review <repo> <source> <target>    Run full AI code review with multiple agents
+  config                             Manage configuration (API key, base URL, model)
 
-Arguments:
-  repoPath      Path to the git repository
-  sourceBranch  Source branch name (will use origin/<sourceBranch>)
-  targetBranch  Target branch name (will use origin/<targetBranch>)
+Arguments (for analyze/review):
+  repo          Path to the git repository
+  source        Source branch name (will use origin/<source>)
+  target        Target branch name (will use origin/<target>)
 
 Options (review command):
-  --format=<format>    Output format (default: markdown)
-                       - json: Full JSON report
-                       - markdown: Human-readable markdown
-                       - summary: Brief CLI summary
-                       - pr-comments: JSON for PR comment integration
-  --language=<lang>    Output language (default: zh)
-                       - zh: Chinese (中文)
-                       - en: English
-  --config-dir=<path>  Directory containing review configuration (recommended)
-                       Auto-loads rules/ and agents/ subdirectories:
-                         <path>/rules/   - Custom review rules (*.md)
-                         <path>/agents/  - Custom agent definitions (*.yaml)
-  --rules-dir=<path>   Directory containing custom review rules (can be used multiple times)
-                       Expected files: global.md, security.md, logic.md, style.md,
-                       performance.md, checklist.yaml
-  --agents-dir=<path>  Directory containing custom agent definitions (can be used multiple times)
-                       Expected format: YAML files with name, description, triggers, prompt
+  --format=<format>    Output format: json | markdown (default) | summary | pr-comments
+  --language=<lang>    Output language: zh (default) | en
+  --config-dir=<path>  Config directory (auto-loads rules/ and agents/)
+  --rules-dir=<path>   Custom review rules directory
+  --agents-dir=<path>  Custom agent definitions directory
   --skip-validation    Skip issue validation (faster but less accurate)
   --monitor            Enable real-time status monitoring UI
   --monitor-port=<num> Status monitor port (default: 3456)
   --verbose            Enable verbose output
 
-Note:
-  This tool compares REMOTE branches (origin/...) to match GitHub PR/GitLab MR behavior.
-  Make sure to fetch latest changes before running.
+Config subcommands:
+  argus config set <key> <value>     Set a configuration value
+  argus config get <key>             Get a configuration value
+  argus config list                  List all configuration
+  argus config delete <key>          Delete a configuration value
+  argus config path                  Show config file location
+
+Config keys:
+  api-key       Anthropic API key
+  base-url      Custom API base URL (for proxies)
+  model         Model to use (e.g., claude-sonnet-4-5-20250929)
 
 Examples:
-  tsx src/index.ts analyze /path/to/repo feature/new-feature develop
-  tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json --monitor
-  tsx src/index.ts review /path/to/repo feature-branch main --config-dir ./.ai-review
-  tsx src/index.ts review /path/to/repo feature-branch main --rules-dir ./rules --agents-dir ./agents
-  npx tsx src/index.ts review /path/to/repo Alex/bugfix/bug3303 develop --monitor
-  npm run dev -- review /path/to/repo Alex/bugfix/bug3303 develop --monitor
+  argus config set api-key sk-ant-xxx
+  argus config set base-url https://my-proxy.com/v1
+  argus config list
+  argus review /path/to/repo feature-branch main --format=markdown
 `);
+}
+
+/**
+ * Print config command usage
+ */
+function printConfigUsage(): void {
+  console.log(`
+Usage: argus config <subcommand> [options]
+
+Subcommands:
+  set <key> <value>    Set a configuration value
+  get <key>            Get a configuration value
+  list                 List all configuration
+  delete <key>         Delete a configuration value
+  path                 Show config file location
+
+Keys:
+  api-key       Anthropic API key
+  base-url      Custom API base URL (for proxies)
+  model         Model to use (e.g., claude-sonnet-4-5-20250929)
+
+Examples:
+  argus config set api-key sk-ant-api03-xxxxx
+  argus config set base-url https://my-proxy.com/v1
+  argus config set model claude-sonnet-4-5-20250929
+  argus config get api-key
+  argus config list
+  argus config delete base-url
+  argus config path
+
+Note:
+  Config is stored in ~/.argus/config.json
+  Environment variables take precedence over config file values.
+`);
+}
+
+/**
+ * Handle config command
+ */
+function runConfigCommand(args: string[]): void {
+  const subcommand = args[0];
+
+  if (!subcommand || subcommand === 'help' || subcommand === '--help') {
+    printConfigUsage();
+    return;
+  }
+
+  // Map CLI key names to config keys
+  const keyMap: Record<string, 'apiKey' | 'baseUrl' | 'model'> = {
+    'api-key': 'apiKey',
+    apikey: 'apiKey',
+    'base-url': 'baseUrl',
+    baseurl: 'baseUrl',
+    model: 'model',
+  };
+
+  switch (subcommand) {
+    case 'set': {
+      const key = args[1]?.toLowerCase();
+      const value = args[2];
+
+      if (!key || !value) {
+        console.error('Error: config set requires <key> and <value>\n');
+        printConfigUsage();
+        process.exit(1);
+      }
+
+      const configKey = keyMap[key];
+      if (!configKey) {
+        console.error(`Error: Unknown config key "${key}"`);
+        console.error('Valid keys: api-key, base-url, model');
+        process.exit(1);
+      }
+
+      saveConfig({ [configKey]: value });
+
+      // Mask API key in output
+      const displayValue = configKey === 'apiKey' ? maskApiKey(value) : value;
+      console.log(`Set ${key} = ${displayValue}`);
+      break;
+    }
+
+    case 'get': {
+      const key = args[1]?.toLowerCase();
+
+      if (!key) {
+        console.error('Error: config get requires <key>\n');
+        printConfigUsage();
+        process.exit(1);
+      }
+
+      const configKey = keyMap[key];
+      if (!configKey) {
+        console.error(`Error: Unknown config key "${key}"`);
+        console.error('Valid keys: api-key, base-url, model');
+        process.exit(1);
+      }
+
+      const config = loadConfig();
+      const value = config[configKey];
+
+      if (value) {
+        // Mask API key in output
+        const displayValue = configKey === 'apiKey' ? maskApiKey(value) : value;
+        console.log(displayValue);
+      } else {
+        console.log(`(not set)`);
+      }
+      break;
+    }
+
+    case 'list': {
+      const config = loadConfig();
+
+      console.log('Current configuration:');
+      console.log('=================================');
+
+      if (Object.keys(config).length === 0) {
+        console.log('(no configuration set)');
+      } else {
+        if (config.apiKey) {
+          console.log(`api-key:   ${maskApiKey(config.apiKey)}`);
+        }
+        if (config.baseUrl) {
+          console.log(`base-url:  ${config.baseUrl}`);
+        }
+        if (config.model) {
+          console.log(`model:     ${config.model}`);
+        }
+      }
+
+      console.log('=================================');
+      console.log(`Config file: ${getConfigLocation()}`);
+      break;
+    }
+
+    case 'delete': {
+      const key = args[1]?.toLowerCase();
+
+      if (!key) {
+        console.error('Error: config delete requires <key>\n');
+        printConfigUsage();
+        process.exit(1);
+      }
+
+      const configKey = keyMap[key];
+      if (!configKey) {
+        console.error(`Error: Unknown config key "${key}"`);
+        console.error('Valid keys: api-key, base-url, model');
+        process.exit(1);
+      }
+
+      deleteConfigValue(configKey);
+      console.log(`Deleted ${key}`);
+      break;
+    }
+
+    case 'path': {
+      console.log(getConfigLocation());
+      break;
+    }
+
+    default:
+      console.error(`Error: Unknown config subcommand "${subcommand}"\n`);
+      printConfigUsage();
+      process.exit(1);
+  }
+}
+
+/**
+ * Mask API key for display
+ */
+function maskApiKey(key: string): string {
+  if (key.length <= 12) {
+    return '***';
+  }
+  return key.slice(0, 8) + '...' + key.slice(-4);
 }
 
 /**
@@ -211,15 +384,35 @@ export async function main(): Promise<void> {
   // process.argv[2+] = user arguments
   const args = process.argv.slice(2);
 
-  // Check for minimum arguments
-  if (args.length < 3) {
+  // Handle no arguments or help
+  if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
+    printUsage();
+    return;
+  }
+
+  // Check if first arg is a command
+  const firstArg = args[0];
+
+  // Handle config command
+  if (firstArg === 'config') {
+    runConfigCommand(args.slice(1));
+    return;
+  }
+
+  // For analyze/review commands, check for minimum arguments
+  if (args.length < 3 && firstArg !== 'analyze' && firstArg !== 'review') {
+    // Legacy mode with too few args
     console.error('Error: Invalid number of arguments\n');
     printUsage();
     process.exit(1);
   }
 
-  // Check if first arg is a command
-  const firstArg = args[0];
+  if ((firstArg === 'analyze' || firstArg === 'review') && args.length < 4) {
+    console.error(`Error: ${firstArg} command requires <repo> <source> <target>\n`);
+    printUsage();
+    process.exit(1);
+  }
+
   let command = 'analyze';
   let repoPath: string;
   let sourceBranch: string;
