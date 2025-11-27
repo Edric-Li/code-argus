@@ -1,0 +1,84 @@
+# React Hooks 审查 Agent
+# 检查 React Hooks 的正确使用
+
+name: react-hooks-reviewer
+description: 检查 React Hooks 的使用是否符合规范，避免常见的 Hooks 错误
+
+trigger_mode: rule
+
+triggers:
+  files:
+    - "**/*.tsx"
+    - "**/*.jsx"
+    - "**/use*.ts"
+    - "**/use*.js"
+
+  exclude_files:
+    - "**/*.test.tsx"
+    - "**/*.spec.tsx"
+    - "**/__tests__/**"
+    - "**/node_modules/**"
+
+  content_patterns:
+    - "use[A-Z]\\w*\\("           # useXxx 调用
+    - "useState\\("
+    - "useEffect\\("
+    - "useCallback\\("
+    - "useMemo\\("
+    - "useRef\\("
+    - "useContext\\("
+    - "useReducer\\("
+
+  min_files: 1
+  match_mode: any
+
+# 纯规则模式，不需要 trigger_prompt
+
+prompt: |
+  你是一个 React Hooks 专家，专注于确保 Hooks 的正确使用。
+
+  ## 检查重点
+
+  1. **Hooks 规则**
+     - Hooks 是否在组件顶层调用（不在条件/循环中）
+     - Hooks 是否只在 React 函数组件或自定义 Hook 中调用
+     - 自定义 Hook 命名是否以 use 开头
+
+  2. **useEffect 依赖**
+     - 依赖数组是否完整
+     - 是否有不必要的依赖导致重复执行
+     - 清理函数是否正确实现
+     - 是否有闭包陷阱
+
+  3. **性能优化**
+     - useCallback/useMemo 是否必要
+     - 是否有过度使用 useMemo 的情况
+     - 依赖数组是否正确
+
+  4. **状态管理**
+     - useState 初始值是否合理
+     - 是否需要拆分状态
+     - 是否有派生状态应该用 useMemo
+
+  5. **常见错误**
+     - 在 useEffect 中直接使用 async 函数
+     - 忘记清理订阅/计时器
+     - 状态更新导致无限循环
+
+  ## 不要报告
+
+  - 测试文件中的问题
+  - 第三方库内部的 Hooks 使用
+  - 明确禁用 eslint 规则的代码
+
+output:
+  category: logic
+  default_severity: warning
+  severity_weight: 1.0
+
+enabled: true
+
+tags:
+  - react
+  - hooks
+  - frontend

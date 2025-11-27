@@ -53,6 +53,13 @@ import {
   type RuleAgentType,
   EMPTY_RULES_CONFIG,
 } from './rules/index.js';
+import {
+  loadCustomAgents,
+  matchCustomAgents,
+  executeCustomAgents,
+  type LoadedCustomAgent,
+  type CustomAgentResult,
+} from './custom-agents/index.js';
 
 /**
  * Default orchestrator options
@@ -69,6 +76,8 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   smartAgentSelection: true,
   disableSelectionLLM: false,
   rulesDirs: [],
+  customAgentsDirs: [],
+  disableCustomAgentLLM: false,
 };
 
 /**
@@ -84,6 +93,7 @@ export class StreamingReviewOrchestrator {
   private rulesConfig: RulesConfig = EMPTY_RULES_CONFIG;
   private autoRejectedIssues: ValidatedIssue[] = [];
   private rawIssuesForSkipMode: RawIssue[] = [];
+  private loadedCustomAgents: LoadedCustomAgent[] = [];
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -139,6 +149,67 @@ export class StreamingReviewOrchestrator {
           );
         } else {
           this.progress.info('未找到自定义规则文件');
+        }
+      }
+
+      // Load custom agents if specified
+      let triggeredCustomAgents: LoadedCustomAgent[] = [];
+      if (this.options.customAgentsDirs.length > 0) {
+        this.progress.progress('加载自定义 Agents...');
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Loading custom agents from: ${this.options.customAgentsDirs.join(', ')}`
+          );
+        }
+
+        const loadResult = await loadCustomAgents(this.options.customAgentsDirs, {
+          verbose: this.options.verbose,
+        });
+
+        this.loadedCustomAgents = loadResult.agents;
+
+        if (loadResult.errors.length > 0) {
+          for (const err of loadResult.errors) {
+            this.progress.warn(`加载自定义 Agent 失败: ${err.file}: ${err.error}`);
+          }
+        }
+
+        if (this.loadedCustomAgents.length > 0) {
+          this.progress.success(`加载 ${this.loadedCustomAgents.length} 个自定义 Agents`);
+
+          // Match custom agents against diff
+          this.progress.progress('匹配自定义 Agent 触发条件...');
+          const matchResult = await matchCustomAgents(
+            this.loadedCustomAgents,
+            diffFiles,
+            context.fileAnalyses,
+            {
+              verbose: this.options.verbose,
+              disableLLM: this.options.disableCustomAgentLLM,
+              diffContent: context.diff.diff,
+            }
+          );
+
+          triggeredCustomAgents = matchResult.triggeredAgents.map((t) => t.agent);
+
+          if (triggeredCustomAgents.length > 0) {
+            this.progress.success(`触发 ${triggeredCustomAgents.length} 个自定义 Agents`);
+            for (const { agent, result } of matchResult.triggeredAgents) {
+              this.progress.info(`  ✓ ${agent.name}: ${result.reason}`);
+            }
+          } else {
+            this.progress.info('无自定义 Agent 被触发');
+          }
+
+          if (matchResult.skippedAgents.length > 0 && this.options.verbose) {
+            for (const { agent, reason } of matchResult.skippedAgents) {
+              console.log(
+                `[StreamingOrchestrator] Skipped custom agent "${agent.name}": ${reason}`
+              );
+            }
+          }
+        } else {
+          this.progress.info('未找到自定义 Agent 定义');
         }
       }
 
@@ -258,6 +329,12 @@ export class StreamingReviewOrchestrator {
               onAutoRejected: (issue, reason) => {
                 this.progress.autoRejected(issue.title, reason);
               },
+              onRoundComplete: (_issueId, issueTitle, round, maxRounds, status) => {
+                this.progress.validationRound(issueTitle, round, maxRounds, status);
+              },
+              onValidationActivity: (_issueId, issueTitle, activity) => {
+                this.progress.validationActivity(issueTitle, activity);
+              },
             },
           });
 
@@ -279,6 +356,112 @@ export class StreamingReviewOrchestrator {
       );
       tokensUsed += agentTokens;
 
+      // Run custom agents if any were triggered
+      let customAgentResults: CustomAgentResult[] = [];
+      if (triggeredCustomAgents.length > 0) {
+        this.progress.progress(`运行 ${triggeredCustomAgents.length} 个自定义 Agents...`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Running ${triggeredCustomAgents.length} custom agents...`
+          );
+        }
+        this.sendStatus({
+          type: 'phase',
+          phase: 'Custom Agent Execution',
+          message: `正在运行 ${triggeredCustomAgents.length} 个自定义审查 Agents...`,
+        });
+
+        // Show custom agents starting
+        for (const agent of triggeredCustomAgents) {
+          this.progress.agent(agent.name, 'running');
+        }
+
+        // Build file analyses summary for custom agents
+        const fileAnalysesSummary = context.fileAnalyses
+          .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
+          .join('\n');
+
+        customAgentResults = await executeCustomAgents(
+          triggeredCustomAgents,
+          {
+            verbose: this.options.verbose,
+            repoPath: reviewRepoPath,
+            diffContent: context.diff.diff,
+            fileAnalysesSummary,
+            standardsText: standardsToText(context.standards),
+          },
+          {
+            onAgentStart: (agent) => {
+              this.sendStatus({
+                type: 'agent',
+                agent: agent.name,
+                message: `${agent.name} 开始分析...`,
+                details: { status: 'running', isCustom: true },
+              });
+            },
+            onAgentComplete: (agent, result) => {
+              const elapsed = result.execution_time_ms;
+              const elapsedStr =
+                elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`;
+              this.progress.agent(
+                agent.name,
+                'completed',
+                `${result.issues.length} issues, ${elapsedStr}`
+              );
+              this.sendStatus({
+                type: 'agent',
+                agent: agent.name,
+                message: `${agent.name} 完成`,
+                details: { status: 'completed', issues: result.issues.length, isCustom: true },
+              });
+            },
+            onAgentError: (agent, error) => {
+              this.progress.agent(agent.name, 'error', error.message);
+              this.sendStatus({
+                type: 'agent',
+                agent: agent.name,
+                message: `${agent.name} 失败: ${error.message}`,
+                details: { status: 'error', isCustom: true },
+              });
+            },
+            onIssueDiscovered: (issue) => {
+              this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
+              this.sendStatus({
+                type: 'progress',
+                message: `发现问题: ${issue.title}`,
+                details: {
+                  issue_id: issue.id,
+                  severity: issue.severity,
+                  file: issue.file,
+                  line: issue.line_start,
+                  isCustom: true,
+                },
+              });
+
+              // Enqueue custom agent issues for validation
+              if (!this.options.skipValidation && this.streamingValidator) {
+                const autoRejected = this.streamingValidator.enqueue(issue);
+                if (autoRejected) {
+                  this.autoRejectedIssues.push(autoRejected);
+                }
+              } else if (this.options.skipValidation) {
+                this.rawIssuesForSkipMode.push(issue);
+              }
+            },
+          },
+          this.options.maxConcurrency
+        );
+
+        // Sum up tokens from custom agents
+        const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
+        tokensUsed += customAgentTokens;
+
+        const totalCustomIssues = customAgentResults.reduce((sum, r) => sum + r.issues.length, 0);
+        this.progress.success(
+          `自定义 Agents 完成: ${totalCustomIssues} 个问题, ${customAgentTokens} tokens`
+        );
+      }
+
       // Phase 3: Wait for all validations to complete
       this.progress.phase(3, 4, '等待验证完成...');
       if (this.options.verbose) {
@@ -292,10 +475,26 @@ export class StreamingReviewOrchestrator {
 
       // Flush streaming validator and get results
       let validatedIssues: ValidatedIssue[] = [];
+      let validationTokens = 0;
       if (this.streamingValidator) {
-        const validationResult = await this.streamingValidator.flush();
-        validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
-        tokensUsed += validationResult.tokensUsed;
+        // Start a status polling interval to show progress while waiting
+        const statusInterval = globalThis.setInterval(() => {
+          const stats = this.streamingValidator?.getStats();
+          if (stats && stats.total > 0) {
+            this.progress.progress(
+              `验证进度: ${stats.completed}/${stats.total} (${stats.activeSessions} 个活跃会话)`
+            );
+          }
+        }, 5000); // Update every 5 seconds
+
+        try {
+          const validationResult = await this.streamingValidator.flush();
+          validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+          validationTokens = validationResult.tokensUsed;
+          tokensUsed += validationTokens;
+        } finally {
+          globalThis.clearInterval(statusInterval);
+        }
 
         const confirmed = validatedIssues.filter((i) => i.validation_status === 'confirmed').length;
         const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
@@ -307,7 +506,7 @@ export class StreamingReviewOrchestrator {
           rejected,
           uncertain,
           autoRejected: this.autoRejectedIssues.length,
-          tokensUsed: validationResult.tokensUsed,
+          tokensUsed: validationTokens,
           timeMs: Date.now() - startTime,
         });
       } else if (this.options.skipValidation) {

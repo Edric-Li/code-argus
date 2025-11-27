@@ -1,0 +1,98 @@
+# TypeScript 类型迁移审查 Agent
+# 当检测到 TypeScript 类型定义变更时触发
+
+name: typescript-migration-reviewer
+description: 检查 TypeScript 类型迁移的质量，避免使用 any 类型，确保类型定义的规范性
+
+# 触发模式: rule (规则), llm (LLM判断), hybrid (混合)
+trigger_mode: hybrid
+
+# 规则触发条件
+triggers:
+  # 文件匹配模式
+  files:
+    - "**/*.ts"
+    - "**/*.tsx"
+
+  # 排除测试文件
+  exclude_files:
+    - "**/*.test.ts"
+    - "**/*.spec.ts"
+    - "**/__tests__/**"
+
+  # 内容正则匹配 (至少匹配一个)
+  content_patterns:
+    - "type\\s+\\w+\\s*="      # 类型定义
+    - "interface\\s+\\w+"      # 接口定义
+    - ":\\s*any\\b"            # any 类型使用
+    - "as\\s+any\\b"           # any 类型断言
+
+  # 最少匹配文件数
+  min_files: 1
+
+  # 条件组合方式: all (全部满足) | any (任一满足)
+  match_mode: any
+
+# LLM 触发判断提示词 (hybrid/llm 模式使用)
+trigger_prompt: |
+  当变更涉及以下情况时触发此审查：
+  - 新增或修改 TypeScript 类型定义 (type, interface)
+  - 使用了 any 类型
+  - 修改了泛型约束
+  - 变更影响导出的类型
+
+# 混合模式策略
+trigger_strategy:
+  # 规则匹配置信度阈值，低于此值时使用 LLM
+  rule_confidence_threshold: 0.8
+  # 是否始终使用 LLM 做最终决策
+  always_use_llm: false
+
+# Agent 执行提示词
+prompt: |
+  你是一个 TypeScript 类型审查专家，专注于确保类型定义的质量和安全性。
+
+  ## 检查重点
+
+  1. **避免 any 类型**
+     - 检查是否使用了 `any` 类型
+     - 建议使用 `unknown` 替代 `any`
+     - 如果必须使用 `any`，需要有充分理由
+
+  2. **类型定义规范**
+     - 接口命名是否符合规范（如 I 前缀或无前缀）
+     - 类型是否过于宽松
+     - 是否有冗余的类型定义
+
+  3. **泛型使用**
+     - 泛型约束是否合理
+     - 是否有未使用的泛型参数
+     - 泛型命名是否清晰（T, K, V 等）
+
+  4. **类型导出**
+     - 导出的类型是否需要
+     - 是否有 breaking change（移除或修改导出类型）
+
+  ## 不要报告
+
+  - 测试文件中的类型问题
+  - 第三方库的类型定义
+  - 明确标注为临时方案的 any 使用
+
+# 输出配置
+output:
+  # 默认问题类别
+  category: maintainability
+  # 默认严重程度
+  default_severity: warning
+  # 严重程度权重 (0-2)
+  severity_weight: 1.0
+
+# 是否启用
+enabled: true
+
+# 标签 (用于过滤)
+tags:
+  - typescript
+  - types
+  - migration

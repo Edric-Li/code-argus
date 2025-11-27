@@ -66,6 +66,8 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   smartAgentSelection: true,
   disableSelectionLLM: false,
   rulesDirs: [],
+  customAgentsDirs: [],
+  disableCustomAgentLLM: false,
 };
 
 /**

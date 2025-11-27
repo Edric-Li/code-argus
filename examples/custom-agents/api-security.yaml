@@ -1,0 +1,92 @@
+# API 安全审查 Agent
+# 专门检查 API 端点的安全性问题
+
+name: api-security-checker
+description: 检查 API 端点的安全性，包括认证、授权、输入验证等
+
+trigger_mode: hybrid
+
+triggers:
+  files:
+    - "src/api/**/*"
+    - "src/routes/**/*"
+    - "src/controllers/**/*"
+    - "**/*controller*.ts"
+    - "**/*router*.ts"
+    - "**/*api*.ts"
+
+  exclude_files:
+    - "**/*.test.ts"
+    - "**/*.spec.ts"
+
+  content_patterns:
+    - "app\\.(get|post|put|delete|patch)\\("
+    - "@(Get|Post|Put|Delete|Patch)\\("
+    - "router\\.(get|post|put|delete|patch)\\("
+    - "fetch\\("
+    - "axios\\."
+
+  min_files: 1
+  match_mode: any
+
+trigger_prompt: |
+  当变更涉及以下情况时触发此审查：
+  - 新增或修改 API 端点
+  - 涉及用户认证、授权逻辑
+  - 处理敏感数据（密码、token、个人信息）
+  - 修改了中间件或拦截器
+  - 涉及文件上传或下载
+  - 处理外部服务调用
+
+trigger_strategy:
+  rule_confidence_threshold: 0.7
+  always_use_llm: false
+
+prompt: |
+  你是一个 API 安全审查专家，专注于识别 Web API 中的安全漏洞。
+
+  ## 检查重点
+
+  1. **认证与授权**
+     - API 是否需要认证但缺少认证检查
+     - 是否有越权访问风险
+     - Token/Session 处理是否安全
+
+  2. **输入验证**
+     - 请求参数是否经过验证
+     - 是否有 SQL 注入风险
+     - 是否有 NoSQL 注入风险
+     - 是否有命令注入风险
+
+  3. **数据泄露**
+     - 响应是否包含敏感信息
+     - 错误信息是否泄露内部实现
+     - 日志是否记录敏感数据
+
+  4. **速率限制**
+     - 是否需要但缺少速率限制
+     - 暴力破解防护
+
+  5. **CORS 配置**
+     - CORS 配置是否过于宽松
+     - 是否允许不必要的来源
+
+  ## 严重程度判断
+
+  - critical: 可直接利用的漏洞（SQL注入、未授权访问）
+  - error: 需要特定条件才能利用的漏洞
+  - warning: 潜在风险或最佳实践违反
+  - suggestion: 安全增强建议
+
+output:
+  category: security
+  default_severity: warning
+  severity_weight: 1.5
+
+enabled: true
+
+tags:
+  - api
+  - security
+  - authentication
+  - authorization

@@ -1,0 +1,91 @@
+# 数据库查询审查 Agent
+# 使用 LLM 智能判断是否涉及数据库操作
+
+name: database-query-reviewer
+description: 检查数据库查询的性能和安全性，包括 N+1 问题、SQL 注入、事务使用等
+
+# 使用 LLM 模式，通过自然语言描述触发条件
+trigger_mode: llm
+
+trigger_prompt: |
+  当变更涉及以下情况时触发此审查：
+
+  1. **ORM 操作**
+     - Prisma、TypeORM、Sequelize、Drizzle 等 ORM 调用
+     - 数据库模型定义或修改
+     - 关联查询（include、join、populate）
+
+  2. **原生 SQL**
+     - 包含 SQL 语句（SELECT、INSERT、UPDATE、DELETE）
+     - 数据库迁移文件
+     - 存储过程或函数
+
+  3. **数据库配置**
+     - 连接池配置
+     - 数据库索引定义
+     - 事务配置
+
+  4. **数据访问层**
+     - Repository 模式的实现
+     - DAO (Data Access Object) 文件
+     - 数据库工具函数
+
+  不触发条件：
+  - 纯前端代码
+  - 配置文件（非数据库配置）
+  - 测试 mock 数据
+
+prompt: |
+  你是一个数据库专家，专注于审查数据库相关代码的性能和安全性。
+
+  ## 检查重点
+
+  1. **N+1 查询问题**
+     - 在循环中执行数据库查询
+     - 缺少必要的预加载（eager loading）
+     - 可以批量查询但使用了单条查询
+
+  2. **SQL 注入**
+     - 字符串拼接构造 SQL
+     - 未使用参数化查询
+     - 动态表名/列名未验证
+
+  3. **事务使用**
+     - 需要事务但未使用
+     - 事务范围过大或过小
+     - 死锁风险
+
+  4. **索引优化**
+     - 缺少必要的索引
+     - 索引使用不当
+     - 全表扫描风险
+
+  5. **数据完整性**
+     - 缺少外键约束
+     - 缺少唯一约束
+     - 数据类型选择不当
+
+  6. **性能问题**
+     - SELECT * 使用
+     - 未使用分页
+     - 大数据量操作未分批
+
+  ## 严重程度判断
+
+  - critical: N+1 在热点路径、SQL 注入、事务缺失导致数据不一致
+  - error: 明显的性能问题、潜在的数据完整性问题
+  - warning: 可优化的查询、最佳实践违反
+  - suggestion: 性能增强建议
+
+output:
+  category: performance
+  default_severity: warning
+  severity_weight: 1.2
+
+enabled: true
+
+tags:
+  - database
+  - sql
+  - orm
+  - performance

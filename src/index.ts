@@ -45,6 +45,8 @@ Options (review command):
   --rules-dir=<path>   Directory containing custom review rules (can be used multiple times)
                        Expected files: global.md, security.md, logic.md, style.md,
                        performance.md, checklist.yaml
+  --agents-dir=<path>  Directory containing custom agent definitions (can be used multiple times)
+                       Expected format: YAML files with name, description, triggers, prompt
   --skip-validation    Skip issue validation (faster but less accurate)
   --monitor            Enable real-time status monitoring UI
   --monitor-port=<num> Status monitor port (default: 3456)
@@ -58,6 +60,7 @@ Examples:
   tsx src/index.ts analyze /path/to/repo feature/new-feature develop
   tsx src/index.ts review /path/to/repo feature/new-feature develop --format=json --monitor
   tsx src/index.ts review /path/to/repo feature-branch main --rules-dir ./team-rules
+  tsx src/index.ts review /path/to/repo feature-branch main --agents-dir ./custom-agents
   npx tsx src/index.ts review /path/to/repo Alex/bugfix/bug3303 develop --monitor
   npm run dev -- review /path/to/repo Alex/bugfix/bug3303 develop --monitor
 `);
@@ -70,6 +73,7 @@ function parseOptions(args: string[]): {
   format: 'json' | 'markdown' | 'summary' | 'pr-comments';
   language: 'en' | 'zh';
   rulesDirs: string[];
+  customAgentsDirs: string[];
   skipValidation: boolean;
   monitor: boolean;
   monitorPort: number;
@@ -79,6 +83,7 @@ function parseOptions(args: string[]): {
     format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
     language: 'zh' as 'en' | 'zh',
     rulesDirs: [] as string[],
+    customAgentsDirs: [] as string[],
     skipValidation: false,
     monitor: false,
     monitorPort: 3456,
@@ -105,6 +110,11 @@ function parseOptions(args: string[]): {
       const dir = arg.split('=')[1];
       if (dir) {
         options.rulesDirs.push(dir);
+      }
+    } else if (arg.startsWith('--agents-dir=')) {
+      const dir = arg.split('=')[1];
+      if (dir) {
+        options.customAgentsDirs.push(dir);
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
@@ -134,6 +144,10 @@ async function runReviewCommand(
 ): Promise<void> {
   const rulesInfo =
     options.rulesDirs.length > 0 ? `Rules:         ${options.rulesDirs.join(', ')}` : '';
+  const agentsInfo =
+    options.customAgentsDirs.length > 0
+      ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
+      : '';
 
   console.log(`
 @argus/core - AI Code Review
@@ -141,7 +155,7 @@ async function runReviewCommand(
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch}
 Target Branch: ${targetBranch}
-Format:        ${options.format}${rulesInfo ? '\n' + rulesInfo : ''}
+Format:        ${options.format}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
 
@@ -155,6 +169,7 @@ Format:        ${options.format}${rulesInfo ? '\n' + rulesInfo : ''}
       monitor: options.monitor,
       monitorPort: options.monitorPort,
       rulesDirs: options.rulesDirs,
+      customAgentsDirs: options.customAgentsDirs,
     },
   });
 

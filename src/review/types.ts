@@ -395,6 +395,16 @@ export interface OrchestratorOptions {
    * Rules are loaded and merged in order, with later directories taking precedence
    */
   rulesDirs?: string[];
+  /**
+   * Directories containing custom agent definitions
+   * Agents are loaded from YAML files and matched against diff to determine which to run
+   */
+  customAgentsDirs?: string[];
+  /**
+   * Disable LLM-based trigger evaluation for custom agents
+   * When true, only rule-based triggers are used
+   */
+  disableCustomAgentLLM?: boolean;
 }
 
 /**
