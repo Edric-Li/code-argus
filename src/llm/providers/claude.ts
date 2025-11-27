@@ -49,14 +49,15 @@ export class ClaudeProvider extends BaseLLM {
 
   /**
    * Create provider from environment variables
+   * Uses ANTHROPIC_API_KEY for consistency with Claude Agent SDK
    */
   static fromEnv(): ClaudeProvider {
-    const apiKey = process.env['CLAUDE_API_KEY'];
-    const baseURL = process.env['CLAUDE_BASE_URL'];
-    const model = process.env['CLAUDE_MODEL'];
+    const apiKey = process.env['ANTHROPIC_API_KEY'];
+    const baseURL = process.env['ANTHROPIC_BASE_URL'];
+    const model = process.env['ANTHROPIC_MODEL'];
 
     if (!apiKey) {
-      throw new Error('CLAUDE_API_KEY environment variable is required');
+      throw new Error('ANTHROPIC_API_KEY environment variable is required');
     }
 
     return new ClaudeProvider({
