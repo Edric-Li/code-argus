@@ -1,86 +1,111 @@
-# @argus/core
+# code-argus
+
+AI-powered automated code review CLI tool using Claude Agent SDK with multi-agent orchestration.
 
 自动化 AI 代码审查 CLI 工具 - 基于多智能体架构的 Git Diff 分析与问题检测
 
-## 功能特性
+## Features / 功能特性
 
-- **多智能体审查** - 4 个专业 Agent 并行审查：安全、逻辑、性能、风格
-- **智能 Agent 选择** - 基于文件特征自动选择需要运行的 Agent
-- **问题验证** - "挑战模式"多轮验证，减少误报
-- **跨 Agent 去重** - LLM 语义去重，避免重复报告
-- **项目标准感知** - 自动提取 ESLint/TypeScript/Prettier 配置
-- **自定义规则** - 支持团队自定义审查规则和检查清单
-- **多种输出格式** - JSON、Markdown、Summary、PR Comments
-- **实时监控** - WebSocket 状态服务器，可视化审查进度
+- **Multi-Agent Review** - 4 specialized agents review in parallel: security, logic, performance, style
+- **Smart Agent Selection** - Automatically selects agents based on file characteristics
+- **Issue Validation** - Challenge-mode multi-round validation reduces false positives
+- **Cross-Agent Deduplication** - LLM semantic deduplication avoids duplicate reports
+- **Project Standards Aware** - Auto-extracts ESLint/TypeScript/Prettier configs
+- **Custom Rules** - Team-specific review rules and checklists
+- **Multiple Output Formats** - JSON, Markdown, Summary, PR Comments
+- **Real-time Monitoring** - WebSocket status server for visual progress
 
-## 快速开始
+## Installation / 安装
 
-### 安装依赖
+### Global Install (Recommended)
 
 ```bash
+npm install -g code-argus
+```
+
+### Using npx
+
+```bash
+npx code-argus review /path/to/repo feature-branch main
+```
+
+### From Source
+
+```bash
+git clone https://github.com/anthropics/code-argus.git
+cd code-argus/core
 npm install
+npm run build
+npm link
 ```
 
-### 配置环境变量
+## Configuration / 配置
+
+Set your Anthropic API key:
 
 ```bash
-cp .env.example .env
-# 编辑 .env，设置 ANTHROPIC_API_KEY
+export ANTHROPIC_API_KEY=your-api-key
 ```
 
-### 使用方法
-
-#### 命令格式
+Or create a `.env` file in your working directory:
 
 ```bash
-npm run dev -- <command> <repoPath> <sourceBranch> <targetBranch> [options]
+ANTHROPIC_API_KEY=your-api-key
 ```
 
-#### 命令
+## Usage / 使用方法
 
-- `analyze` - 仅分析 diff（快速，不启动 AI Agent）
-- `review` - 完整 AI 代码审查（多智能体并行审查）
+### Command Format
 
-#### 参数说明
+```bash
+argus <command> <repoPath> <sourceBranch> <targetBranch> [options]
+```
 
-- `repoPath` - Git 仓库路径
-- `sourceBranch` - 源分支（PR 分支，使用 `origin/<sourceBranch>`）
-- `targetBranch` - 目标分支（基准分支，使用 `origin/<targetBranch>`）
+### Commands
 
-#### Review 命令选项
+- `analyze` - Quick diff analysis (no AI agents)
+- `review` - Full AI code review (multi-agent parallel review)
 
-| 选项                   | 说明                                                           |
+### Arguments
+
+- `repoPath` - Path to git repository
+- `sourceBranch` - Source branch (PR branch, uses `origin/<sourceBranch>`)
+- `targetBranch` - Target branch (base branch, uses `origin/<targetBranch>`)
+
+### Options
+
+| Option                 | Description                                                    |
 | ---------------------- | -------------------------------------------------------------- |
-| `--format=<format>`    | 输出格式：`json`、`markdown`（默认）、`summary`、`pr-comments` |
-| `--language=<lang>`    | 输出语言：`zh`（默认）、`en`                                   |
-| `--config-dir=<path>`  | 配置目录，自动加载 `rules/` 和 `agents/` 子目录（推荐）        |
-| `--rules-dir=<path>`   | 自定义规则目录（可多次使用）                                   |
-| `--agents-dir=<path>`  | 自定义 Agent 目录（可多次使用）                                |
-| `--skip-validation`    | 跳过问题验证（更快但准确性降低）                               |
-| `--monitor`            | 启用实时状态监控 UI                                            |
-| `--monitor-port=<num>` | 监控端口（默认 3456）                                          |
-| `--verbose`            | 详细输出                                                       |
+| `--format=<format>`    | Output: `json`, `markdown` (default), `summary`, `pr-comments` |
+| `--language=<lang>`    | Language: `zh` (default), `en`                                 |
+| `--config-dir=<path>`  | Config dir (auto-loads `rules/` and `agents/`)                 |
+| `--rules-dir=<path>`   | Custom rules directory (can use multiple times)                |
+| `--agents-dir=<path>`  | Custom agents directory (can use multiple times)               |
+| `--skip-validation`    | Skip validation (faster but less accurate)                     |
+| `--monitor`            | Enable real-time status monitoring UI                          |
+| `--monitor-port=<num>` | Monitor port (default: 3456)                                   |
+| `--verbose`            | Verbose output                                                 |
 
-#### 示例
+### Examples
 
 ```bash
-# 仅分析 diff（快速预览）
-npm run dev -- analyze /path/to/repo feature-branch main
+# Quick diff analysis
+argus analyze /path/to/repo feature-branch main
 
-# 完整 AI 代码审查
-npm run dev -- review /path/to/repo feature-branch main
+# Full AI code review
+argus review /path/to/repo feature-branch main
 
-# 指定输出格式和语言
-npm run dev -- review /path/to/repo feature-branch main --format=json --language=en
+# Review with English output
+argus review /path/to/repo feature-branch main --format=markdown --language=en
 
-# 使用配置目录（自动加载 rules/ 和 agents/）
-npm run dev -- review /path/to/repo feature-branch main --config-dir=./.ai-review --monitor
+# Review with custom config directory
+argus review /path/to/repo feature-branch main --config-dir=./.ai-review --monitor
 
-# 分别指定规则和 Agent 目录
-npm run dev -- review /path/to/repo feature-branch main --rules-dir=./rules --agents-dir=./agents
+# Review with separate rules and agents directories
+argus review /path/to/repo feature-branch main --rules-dir=./rules --agents-dir=./agents
 
-# 快速审查（跳过验证）
-npm run dev -- review /path/to/repo feature-branch main --skip-validation
+# Fast review (skip validation)
+argus review /path/to/repo feature-branch main --skip-validation
 ```
 
 ## 项目结构

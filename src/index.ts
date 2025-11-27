@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 /**
  * @argus/core - Automated Code Review CLI Tool
  * Main Entry Point
@@ -461,7 +462,5 @@ Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
   }
 }
 
-// Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
-  main();
-}
+// Run CLI
+main();

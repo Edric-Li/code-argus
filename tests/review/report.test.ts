@@ -144,10 +144,15 @@ describe('determineRiskLevel', () => {
 
 describe('generateSummary', () => {
   it('should generate summary with no issues', () => {
+    // Default language is 'zh', test Chinese output
     const summary = generateSummary([]);
+    expect(summary).toContain('本次审查未发现重大问题');
+    expect(summary).toContain('低');
 
-    expect(summary).toContain('No significant issues');
-    expect(summary).toContain('LOW');
+    // Test English output
+    const summaryEn = generateSummary([], undefined, 'en');
+    expect(summaryEn).toContain('No significant issues');
+    expect(summaryEn).toContain('LOW');
   });
 
   it('should include issue counts', () => {
@@ -157,7 +162,8 @@ describe('generateSummary', () => {
       createMockValidatedIssue({ id: '3', severity: 'warning', file: 'c.ts' }),
     ];
 
-    const summary = generateSummary(issues);
+    // Test English output
+    const summary = generateSummary(issues, undefined, 'en');
 
     expect(summary).toContain('1 critical');
     expect(summary).toContain('1 error');
@@ -215,9 +221,9 @@ describe('formatAsMarkdown', () => {
       createMockValidatedIssue({ severity: 'error', title: 'Test Error' }),
     ];
     const metrics = calculateMetrics([createMockRawIssue()], issues);
-    const report = generateReport(issues, [], metrics);
+    const report = generateReport(issues, [], metrics, undefined, undefined, 'en');
 
-    const md = formatAsMarkdown(report);
+    const md = formatAsMarkdown(report, { language: 'en' });
 
     expect(md).toContain('# Code Review Report');
     expect(md).toContain('## Summary');
@@ -230,9 +236,16 @@ describe('formatAsMarkdown', () => {
     const checklist: ChecklistItem[] = [
       { id: 'c1', category: 'security', question: 'Is input validated?', result: 'pass' },
     ];
-    const report = generateReport([], checklist, calculateMetrics([], []));
+    const report = generateReport(
+      [],
+      checklist,
+      calculateMetrics([], []),
+      undefined,
+      undefined,
+      'en'
+    );
 
-    const md = formatAsMarkdown(report);
+    const md = formatAsMarkdown(report, { language: 'en' });
 
     expect(md).toContain('## Checklist');
     expect(md).toContain('Is input validated?');
@@ -257,12 +270,12 @@ describe('formatAsSummary', () => {
 
 describe('formatReport', () => {
   it('should use correct format based on option', () => {
-    const report = generateReport([], [], calculateMetrics([], []));
+    const report = generateReport([], [], calculateMetrics([], []), undefined, undefined, 'en');
 
-    const json = formatReport(report, { format: 'json' });
+    const json = formatReport(report, { format: 'json', language: 'en' });
     expect(() => JSON.parse(json)).not.toThrow();
 
-    const md = formatReport(report, { format: 'markdown' });
+    const md = formatReport(report, { format: 'markdown', language: 'en' });
     expect(md).toContain('# Code Review Report');
 
     const summary = formatReport(report, { format: 'summary' });
@@ -270,9 +283,9 @@ describe('formatReport', () => {
   });
 
   it('should default to markdown', () => {
-    const report = generateReport([], [], calculateMetrics([], []));
+    const report = generateReport([], [], calculateMetrics([], []), undefined, undefined, 'en');
 
-    const output = formatReport(report);
+    const output = formatReport(report, { language: 'en' });
 
     expect(output).toContain('# Code Review Report');
   });

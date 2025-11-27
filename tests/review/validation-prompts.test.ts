@@ -86,9 +86,9 @@ describe('Validation Prompts', () => {
     it('should include category-specific prompt for performance', () => {
       const prompt = buildValidationSystemPrompt('performance');
       expect(prompt).toContain('Performance Issue Validation Rules');
-      // Performance-specific checks
+      // Performance-specific checks (updated to match actual template content)
       expect(prompt).toContain('Analyze call frequency');
-      expect(prompt).toContain('Check caching');
+      expect(prompt).toContain('Check existing optimizations');
     });
 
     it('should include category-specific prompt for maintainability', () => {

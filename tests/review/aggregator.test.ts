@@ -85,7 +85,9 @@ describe('aggregateIssues', () => {
     expect(result.map((i) => i.id)).toContain('3');
   });
 
-  it('should deduplicate issues at same location', () => {
+  it('should not deduplicate issues (deduplication handled by LLM deduplicator)', () => {
+    // Note: Deduplication is now handled by the LLM-based deduplicator before aggregation
+    // aggregateIssues only handles filtering and sorting
     const issues: ValidatedIssue[] = [
       createMockIssue({
         id: '1',
@@ -105,8 +107,8 @@ describe('aggregateIssues', () => {
 
     const result = aggregateIssues(issues);
 
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe('2'); // Higher confidence wins
+    // Issues are not deduplicated here - both should remain
+    expect(result).toHaveLength(2);
   });
 
   it('should sort by severity by default', () => {

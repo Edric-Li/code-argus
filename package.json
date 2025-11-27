@@ -1,20 +1,49 @@
 {
-  "name": "@argus/core",
+  "name": "code-argus",
   "version": "0.1.0",
-  "description": "Automated code review CLI tool - Git diff extraction and analysis",
+  "description": "AI-powered automated code review CLI tool using Claude Agent SDK with multi-agent orchestration",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "argus": "./dist/index.js",
+    "code-argus": "./dist/index.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/code-argus.git",
+    "directory": "core"
+  },
+  "keywords": [
+    "code-review",
+    "ai",
+    "claude",
+    "llm",
+    "git",
+    "diff",
+    "static-analysis",
+    "multi-agent",
+    "cli"
+  ],
   "scripts": {
     "dev": "tsx src/index.ts",
     "exec": "tsx",
-    "build": "tsc",
+    "build": "tsc && npm run copy-templates",
+    "copy-templates": "cp -r src/review/prompts/templates dist/review/prompts/",
     "start": "node dist/index.js",
     "type-check": "tsc --noEmit",
     "lint": "eslint . --ext .ts,.tsx",
