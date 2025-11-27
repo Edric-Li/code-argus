@@ -4,6 +4,10 @@
  */
 
 import 'dotenv/config';
+import { initializeEnv } from './config/env.js';
+
+// Initialize environment variables for Claude Agent SDK
+initializeEnv();
 
 import { getDiff } from './git/diff.js';
 import { GitError } from './git/type.js';

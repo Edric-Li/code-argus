@@ -16,6 +16,10 @@
  */
 
 import 'dotenv/config';
+import { initializeEnv } from '../config/env.js';
+
+// Initialize environment for LLM providers
+initializeEnv();
 
 // Export types
 export type {

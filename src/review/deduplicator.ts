@@ -9,6 +9,7 @@ import type { ValidatedIssue } from './types.js';
 import { DEFAULT_DEDUP_MODEL } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
 import { loadDeduplicationTemplate } from './prompts/template-loader.js';
+import { getApiKey } from '../config/env.js';
 
 /**
  * Deduplicator options
@@ -52,7 +53,7 @@ export class IssueDeduplicator {
 
   constructor(options: DeduplicatorOptions = {}) {
     this.options = {
-      apiKey: options.apiKey || process.env.ANTHROPIC_API_KEY || '',
+      apiKey: options.apiKey || getApiKey(),
       model: options.model || DEFAULT_DEDUP_MODEL,
       verbose: options.verbose || false,
     };

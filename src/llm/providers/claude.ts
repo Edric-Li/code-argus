@@ -11,6 +11,7 @@ import type {
   ChatResponse,
   LLMResponseMetadata,
 } from '../types.js';
+import { getApiKey, getBaseUrl, getModel } from '../../config/env.js';
 
 /**
  * Claude-specific configuration
@@ -49,15 +50,15 @@ export class ClaudeProvider extends BaseLLM {
 
   /**
    * Create provider from environment variables
-   * Uses ANTHROPIC_API_KEY for consistency with Claude Agent SDK
+   * Uses the centralized env config for consistency
    */
   static fromEnv(): ClaudeProvider {
-    const apiKey = process.env['ANTHROPIC_API_KEY'];
-    const baseURL = process.env['ANTHROPIC_BASE_URL'];
-    const model = process.env['ANTHROPIC_MODEL'];
+    const apiKey = getApiKey();
+    const baseURL = getBaseUrl();
+    const model = getModel();
 
     if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY environment variable is required');
+      throw new Error('API key required: set ARGUS_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY');
     }
 
     return new ClaudeProvider({
