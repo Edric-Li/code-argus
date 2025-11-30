@@ -434,7 +434,7 @@ export interface ReviewProgressEvent {
 }
 
 /**
- * Input for the review orchestrator
+ * Input for the review orchestrator (branch-based review)
  */
 export interface OrchestratorInput {
   /** Source branch (PR branch) */
@@ -443,6 +443,16 @@ export interface OrchestratorInput {
   targetBranch: string;
   /** Repository path */
   repoPath: string;
+  /** Options */
+  options?: OrchestratorOptions;
+}
+
+/**
+ * Input for local pre-commit review
+ */
+export interface LocalReviewInput {
+  /** Repository path (defaults to current directory) */
+  repoPath?: string;
   /** Options */
   options?: OrchestratorOptions;
 }

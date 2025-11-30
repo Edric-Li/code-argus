@@ -9,6 +9,41 @@ import { tmpdir } from 'node:os';
 import type { DiffOptions, DiffResult } from './type.js';
 import { GitError } from './type.js';
 
+// ============================================================================
+// Common Utilities
+// ============================================================================
+
+/**
+ * Validate that a path is a valid git repository
+ *
+ * @param repoPath - Path to validate
+ * @returns Resolved absolute path
+ * @throws {GitError} If path doesn't exist or isn't a git repository
+ */
+function validateGitRepository(repoPath: string): string {
+  const absolutePath = resolve(repoPath);
+
+  if (!existsSync(absolutePath)) {
+    throw new GitError(`Repository path does not exist: ${absolutePath}`, 'REPO_NOT_FOUND');
+  }
+
+  try {
+    execSync('git rev-parse --git-dir', {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+  } catch (error) {
+    throw new GitError(
+      `Not a git repository: ${absolutePath}`,
+      'NOT_GIT_REPO',
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+
+  return absolutePath;
+}
+
 /**
  * Fetch remote refs
  *
@@ -69,26 +104,7 @@ export function getDiff(
 export function getDiffWithOptions(options: DiffOptions): DiffResult {
   const { repoPath, sourceBranch, targetBranch, remote = 'origin', skipFetch = false } = options;
 
-  // Validate repository path
-  const absolutePath = resolve(repoPath);
-  if (!existsSync(absolutePath)) {
-    throw new GitError(`Repository path does not exist: ${absolutePath}`, 'REPO_NOT_FOUND');
-  }
-
-  // Check if it's a git repository
-  try {
-    execSync('git rev-parse --git-dir', {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
-  } catch (error) {
-    throw new GitError(
-      `Not a git repository: ${absolutePath}`,
-      'NOT_GIT_REPO',
-      error instanceof Error ? error.message : String(error)
-    );
-  }
+  const absolutePath = validateGitRepository(repoPath);
 
   // Fetch latest remote refs (unless skipped)
   if (!skipFetch) {
@@ -368,6 +384,76 @@ export function getIncrementalDiff(options: IncrementalDiffOptions): Incremental
       'DIFF_FAILED',
       err.stderr || err.message
     );
+  }
+}
+
+// ============================================================================
+// Local Diff Operations (for pre-commit review)
+// ============================================================================
+
+/**
+ * Result of local diff operation
+ */
+export interface LocalDiffResult {
+  /** The diff content */
+  diff: string;
+  /** Repository path */
+  repoPath: string;
+  /** Whether this includes staged changes only or all local changes */
+  stagedOnly: boolean;
+}
+
+/**
+ * Get local diff (all uncommitted changes)
+ *
+ * Uses `git diff HEAD` to get all local changes (both staged and unstaged)
+ * relative to the last commit.
+ *
+ * @param repoPath - Path to the git repository (defaults to current directory)
+ * @returns Local diff result
+ * @throws {GitError} If git command fails or repository is invalid
+ */
+export function getLocalDiff(repoPath: string = process.cwd()): LocalDiffResult {
+  const absolutePath = validateGitRepository(repoPath);
+
+  // Execute diff: git diff HEAD (all local changes)
+  try {
+    const diff = execSync('git diff HEAD', {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
+    });
+
+    return {
+      diff,
+      repoPath: absolutePath,
+      stagedOnly: false,
+    };
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError('Failed to get local diff', 'DIFF_FAILED', err.stderr || err.message);
+  }
+}
+
+/**
+ * Get current HEAD commit SHA
+ *
+ * @param repoPath - Path to the git repository
+ * @returns Current HEAD SHA
+ */
+export function getHeadSha(repoPath: string = process.cwd()): string {
+  const absolutePath = validateGitRepository(repoPath);
+
+  try {
+    const sha = execSync('git rev-parse HEAD', {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+    return sha;
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError('Failed to get HEAD SHA', 'REF_NOT_FOUND', err.stderr || err.message);
   }
 }
 

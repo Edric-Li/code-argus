@@ -15,6 +15,7 @@ import type {
   ReviewReport,
   OrchestratorOptions,
   OrchestratorInput,
+  LocalReviewInput,
   AgentResult,
   RawIssue,
   ValidatedIssue,
@@ -33,6 +34,7 @@ import {
   removeWorktree,
   getIncrementalDiff,
   getRemoteBranchSha,
+  getLocalDiff,
   type WorktreeInfo,
 } from '../git/diff.js';
 import {
@@ -100,7 +102,6 @@ export class ReviewOrchestrator {
    */
   async review(input: OrchestratorInput): Promise<ReviewReport> {
     const startTime = Date.now();
-    let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
     let currentSha = '';
 
@@ -148,51 +149,8 @@ export class ReviewOrchestrator {
       const { context, diffFiles } = await this.buildContext(input);
       this.progress.success(`上下文构建完成 (${context.fileAnalyses.length} 个文件)`);
 
-      // Smart agent selection (if enabled)
-      let agentsToRun = this.options.agents;
-      let selectionResult: AgentSelectionResult | null = null;
-
-      if (this.options.smartAgentSelection) {
-        this.progress.progress('智能选择 Agents...');
-        if (this.options.verbose) {
-          console.log('[Orchestrator] Running smart agent selection...');
-        }
-
-        selectionResult = await selectAgents(diffFiles, {
-          verbose: this.options.verbose,
-          disableLLM: this.options.disableSelectionLLM,
-        });
-
-        agentsToRun = selectionResult.agents;
-
-        const skippedAgents = this.options.agents.filter((a) => !agentsToRun.includes(a));
-
-        // Show selection summary
-        if (skippedAgents.length > 0) {
-          this.progress.success(
-            `智能选择完成: 运行 ${agentsToRun.length} 个, 跳过 ${skippedAgents.length} 个`
-          );
-        } else {
-          this.progress.success(`智能选择完成: 运行全部 ${agentsToRun.length} 个 Agents`);
-        }
-
-        // Always show agent selection reasons (not just in verbose mode)
-        for (const agent of agentsToRun) {
-          const reason = selectionResult.reasons[agent] || '默认选择';
-          this.progress.info(`  ✓ ${agent}: ${reason}`);
-        }
-        for (const agent of skippedAgents) {
-          const reason = selectionResult.reasons[agent] || '不需要';
-          this.progress.info(`  ✗ ${agent}: ${reason}`);
-        }
-
-        if (this.options.verbose) {
-          console.log('[Orchestrator] Agent selection details:', {
-            usedLLM: selectionResult.usedLLM,
-            confidence: selectionResult.confidence,
-          });
-        }
-      }
+      // Smart agent selection
+      const { agentsToRun } = await this.selectAgentsIfEnabled(diffFiles);
 
       // Create worktree for review
       this.progress.progress(`创建 worktree: ${input.sourceBranch}...`);
@@ -205,70 +163,14 @@ export class ReviewOrchestrator {
         console.log(`[Orchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
       }
 
-      // Phase 2: Run specialist agents
-      currentPhase++;
-      this.progress.phase(currentPhase, totalPhases, `运行 ${agentsToRun.length} 个 Agents...`);
-      if (this.options.verbose) {
-        console.log('[Orchestrator] Running specialist agents with streaming validation...');
-      }
-
-      const { validatedIssues, checklists, tokens_used } =
-        await this.runAgentsWithStreamingValidation(context, agentsToRun);
-      tokensUsed += tokens_used;
-
-      if (this.options.verbose) {
-        console.log(`[Orchestrator] Total validated issues: ${validatedIssues.length}`);
-      }
-
-      // Phase 3: Aggregate results
-      currentPhase++;
-      this.progress.phase(currentPhase, totalPhases, '聚合结果...');
-      if (this.options.verbose) {
-        console.log('[Orchestrator] Aggregating results...');
-      }
-
-      const aggregationResult = aggregate(validatedIssues, checklists);
-      const aggregatedIssues = aggregationResult.issues;
-      const aggregatedChecklist = aggregationResult.checklist;
-
-      this.progress.success(
-        `聚合完成: ${aggregationResult.stats.total_input} → ${aggregationResult.stats.after_filter} 个问题`
-      );
-
-      if (this.options.verbose) {
-        console.log(
-          `[Orchestrator] Aggregation: filtered to ${aggregationResult.stats.after_filter} issues`
-        );
-      }
-
-      // Phase 4: Generate report
-      currentPhase++;
-      this.progress.phase(currentPhase, totalPhases, '生成报告...');
-
-      const metrics = calculateMetrics(validatedIssues, aggregatedIssues);
-      const metadata = {
-        review_time_ms: Date.now() - startTime,
-        tokens_used: tokensUsed,
-        agents_used: agentsToRun,
-      };
-
-      const report = generateReport(
-        aggregatedIssues,
-        aggregatedChecklist,
-        metrics,
+      // Phase 2-4: Run review pipeline
+      const { report, aggregatedIssues } = await this.runReviewPipeline(
         context,
-        metadata,
-        'zh' // Language will be set when formatting the report
+        agentsToRun,
+        startTime,
+        currentPhase,
+        totalPhases
       );
-
-      this.progress.success('报告生成完成');
-
-      if (this.options.verbose) {
-        console.log(`[Orchestrator] Review completed in ${report.metadata.review_time_ms}ms`);
-      }
-
-      // Final summary
-      this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
 
       // Save review state for incremental reviews
       if (this.stateManager) {
@@ -292,7 +194,7 @@ export class ReviewOrchestrator {
             metadata: {
               totalIssues: aggregatedIssues.length,
               reviewTimeMs: report.metadata.review_time_ms,
-              agentsUsed: agentsToRun,
+              agentsUsed: report.metadata.agents_used,
             },
           });
 
@@ -325,6 +227,114 @@ export class ReviewOrchestrator {
         }
       }
     }
+  }
+
+  /**
+   * Execute a local pre-commit review
+   *
+   * Reviews all uncommitted changes (staged + unstaged) without:
+   * - Fetching remote refs
+   * - Creating worktrees
+   * - Modifying any files (read-only)
+   */
+  async reviewLocal(input: LocalReviewInput): Promise<ReviewReport> {
+    const startTime = Date.now();
+    const repoPath = input.repoPath || process.cwd();
+
+    const totalPhases = this.options.skipValidation ? 4 : 5;
+    let currentPhase = 0;
+
+    // Phase 1: Build local review context
+    currentPhase++;
+    this.progress.phase(currentPhase, totalPhases, '构建本地审查上下文...');
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Building local review context...');
+    }
+
+    const { context, diffFiles } = await this.buildLocalContext(repoPath);
+    this.progress.success(`上下文构建完成 (${context.fileAnalyses.length} 个文件)`);
+
+    // Smart agent selection
+    const { agentsToRun } = await this.selectAgentsIfEnabled(diffFiles);
+
+    // NO worktree creation for local review - agents work directly on repo
+    this.progress.info('本地审查模式: 直接在当前目录运行 (只读)');
+
+    // Phase 2-4: Run review pipeline
+    const { report } = await this.runReviewPipeline(
+      context,
+      agentsToRun,
+      startTime,
+      currentPhase,
+      totalPhases
+    );
+
+    return report;
+  }
+
+  /**
+   * Build context for local pre-commit review
+   *
+   * Differences from buildContext:
+   * - No remote fetch
+   * - Uses git diff HEAD instead of branch comparison
+   * - No worktree path needed
+   */
+  private async buildLocalContext(
+    repoPath: string
+  ): Promise<{ context: ReviewContext; diffFiles: DiffFile[] }> {
+    // Step 1: Get local diff (no remote fetch needed)
+    this.progress.progress('获取本地 diff...');
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Getting local diff (git diff HEAD)...');
+    }
+
+    const diffResult = getLocalDiff(repoPath);
+
+    if (!diffResult.diff.trim()) {
+      throw new Error('没有本地更改可审查。请先修改代码后再运行 pre-commit 审查。');
+    }
+
+    const diffSizeKB = Math.round(diffResult.diff.length / 1024);
+    this.progress.success(`获取本地 diff 完成 (${diffSizeKB} KB)`);
+
+    // Step 2: Parse diff
+    this.progress.progress('解析 diff...');
+    const diffFiles = parseDiff(diffResult.diff);
+    this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+
+    // Step 3: Local diff analysis (fast, no LLM)
+    this.progress.progress('分析变更...');
+    const analyzer = new LocalDiffAnalyzer();
+    const analysisResult = analyzer.analyze(diffFiles);
+    this.progress.success(`分析完成 (${analysisResult.changes.length} 个变更)`);
+
+    // Step 4: Extract project standards
+    this.progress.progress('提取项目标准...');
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Extracting project standards...');
+    }
+    const standards = await createStandards(repoPath);
+    this.progress.success('项目标准提取完成');
+
+    // Create a DiffResult-compatible object for ReviewContext
+    const diffForContext = {
+      diff: diffResult.diff,
+      sourceBranch: 'local',
+      targetBranch: 'HEAD',
+      repoPath: diffResult.repoPath,
+      remote: '',
+    };
+
+    return {
+      context: {
+        repoPath,
+        diff: diffForContext,
+        fileAnalyses: analysisResult.changes,
+        standards,
+      },
+      diffFiles,
+    };
   }
 
   /**
@@ -414,6 +424,145 @@ export class ReviewOrchestrator {
       },
       diffFiles,
     };
+  }
+
+  // ============================================================================
+  // Shared Review Pipeline Methods
+  // ============================================================================
+
+  /**
+   * Select agents based on diff content (if smart selection is enabled)
+   */
+  private async selectAgentsIfEnabled(diffFiles: DiffFile[]): Promise<{
+    agentsToRun: AgentType[];
+    selectionResult: AgentSelectionResult | null;
+  }> {
+    let agentsToRun = this.options.agents;
+    let selectionResult: AgentSelectionResult | null = null;
+
+    if (this.options.smartAgentSelection) {
+      this.progress.progress('智能选择 Agents...');
+      if (this.options.verbose) {
+        console.log('[Orchestrator] Running smart agent selection...');
+      }
+
+      selectionResult = await selectAgents(diffFiles, {
+        verbose: this.options.verbose,
+        disableLLM: this.options.disableSelectionLLM,
+      });
+
+      agentsToRun = selectionResult.agents;
+
+      const skippedAgents = this.options.agents.filter((a) => !agentsToRun.includes(a));
+
+      if (skippedAgents.length > 0) {
+        this.progress.success(
+          `智能选择完成: 运行 ${agentsToRun.length} 个, 跳过 ${skippedAgents.length} 个`
+        );
+      } else {
+        this.progress.success(`智能选择完成: 运行全部 ${agentsToRun.length} 个 Agents`);
+      }
+
+      for (const agent of agentsToRun) {
+        const reason = selectionResult.reasons[agent] || '默认选择';
+        this.progress.info(`  ✓ ${agent}: ${reason}`);
+      }
+      for (const agent of skippedAgents) {
+        const reason = selectionResult.reasons[agent] || '不需要';
+        this.progress.info(`  ✗ ${agent}: ${reason}`);
+      }
+
+      if (this.options.verbose) {
+        console.log('[Orchestrator] Agent selection details:', {
+          usedLLM: selectionResult.usedLLM,
+          confidence: selectionResult.confidence,
+        });
+      }
+    }
+
+    return { agentsToRun, selectionResult };
+  }
+
+  /**
+   * Run the review pipeline: agents → aggregation → report
+   *
+   * Shared by both review() and reviewLocal() methods
+   */
+  private async runReviewPipeline(
+    context: ReviewContext,
+    agentsToRun: AgentType[],
+    startTime: number,
+    startPhase: number,
+    totalPhases: number
+  ): Promise<{ report: ReviewReport; tokensUsed: number; aggregatedIssues: ValidatedIssue[] }> {
+    let tokensUsed = 0;
+    let currentPhase = startPhase;
+
+    // Phase: Run specialist agents
+    currentPhase++;
+    this.progress.phase(currentPhase, totalPhases, `运行 ${agentsToRun.length} 个 Agents...`);
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Running specialist agents with streaming validation...');
+    }
+
+    const { validatedIssues, checklists, tokens_used } =
+      await this.runAgentsWithStreamingValidation(context, agentsToRun);
+    tokensUsed += tokens_used;
+
+    if (this.options.verbose) {
+      console.log(`[Orchestrator] Total validated issues: ${validatedIssues.length}`);
+    }
+
+    // Phase: Aggregate results
+    currentPhase++;
+    this.progress.phase(currentPhase, totalPhases, '聚合结果...');
+    if (this.options.verbose) {
+      console.log('[Orchestrator] Aggregating results...');
+    }
+
+    const aggregationResult = aggregate(validatedIssues, checklists);
+    const aggregatedIssues = aggregationResult.issues;
+    const aggregatedChecklist = aggregationResult.checklist;
+
+    this.progress.success(
+      `聚合完成: ${aggregationResult.stats.total_input} → ${aggregationResult.stats.after_filter} 个问题`
+    );
+
+    if (this.options.verbose) {
+      console.log(
+        `[Orchestrator] Aggregation: filtered to ${aggregationResult.stats.after_filter} issues`
+      );
+    }
+
+    // Phase: Generate report
+    currentPhase++;
+    this.progress.phase(currentPhase, totalPhases, '生成报告...');
+
+    const metrics = calculateMetrics(validatedIssues, aggregatedIssues);
+    const metadata = {
+      review_time_ms: Date.now() - startTime,
+      tokens_used: tokensUsed,
+      agents_used: agentsToRun,
+    };
+
+    const report = generateReport(
+      aggregatedIssues,
+      aggregatedChecklist,
+      metrics,
+      context,
+      metadata,
+      'zh'
+    );
+
+    this.progress.success('报告生成完成');
+
+    if (this.options.verbose) {
+      console.log(`[Orchestrator] Review completed in ${report.metadata.review_time_ms}ms`);
+    }
+
+    this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
+
+    return { report, tokensUsed, aggregatedIssues };
   }
 
   /**
@@ -829,4 +978,12 @@ export function createOrchestrator(options?: OrchestratorOptions): ReviewOrchest
 export async function review(input: OrchestratorInput): Promise<ReviewReport> {
   const orchestrator = createOrchestrator(input.options);
   return orchestrator.review(input);
+}
+
+/**
+ * Convenience function to run a local pre-commit review
+ */
+export async function reviewLocal(input: LocalReviewInput): Promise<ReviewReport> {
+  const orchestrator = createOrchestrator(input.options);
+  return orchestrator.reviewLocal(input);
 }

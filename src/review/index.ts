@@ -12,6 +12,9 @@ export {
   streamingReview as review,
 } from './streaming-orchestrator.js';
 
+// Local pre-commit review (non-streaming, simpler flow)
+export { reviewLocal } from './orchestrator.js';
+
 // Streaming validator
 export {
   StreamingValidator,
@@ -54,6 +57,7 @@ export type {
   // Orchestrator types
   OrchestratorOptions,
   OrchestratorInput,
+  LocalReviewInput,
   // Progress event type
   ReviewProgressEvent,
 } from './types.js';

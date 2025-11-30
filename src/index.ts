@@ -16,7 +16,7 @@ import { parseDiff } from './git/parser.js';
 import { getPRCommits } from './git/commits.js';
 import { createDiffAnalyzer } from './analyzer/index.js';
 import { analyzeIntent, filterCommits } from './intent/index.js';
-import { review, formatReport } from './review/index.js';
+import { review, reviewLocal, formatReport } from './review/index.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
 
 /**
@@ -29,6 +29,7 @@ Usage: argus <command> [options]
 Commands:
   analyze <repo> <source> <target>   Run diff analysis and intent detection
   review <repo> <source> <target>    Run full AI code review with multiple agents
+  pre-commit                         Review local uncommitted changes (pre-commit hook)
   config                             Manage configuration (API key, base URL, model)
 
 Arguments (for analyze/review):
@@ -46,6 +47,12 @@ Options (review command):
   --skip-validation    Skip issue validation (faster but less accurate)
   --incremental        Enable incremental review (only review new commits)
   --reset-state        Reset review state and force full review
+  --verbose            Enable verbose output
+
+Options (pre-commit command):
+  --json-logs          Output as JSON event stream (for service integration)
+  --language=<lang>    Output language: zh (default) | en
+  --validate           Enable issue validation (disabled by default for speed)
   --verbose            Enable verbose output
 
 Config subcommands:
@@ -66,6 +73,8 @@ Examples:
   argus config list
   argus review /path/to/repo feature-branch main
   argus review /path/to/repo feature-branch main --json-logs
+  argus pre-commit                    # Review local changes (fast, no validation)
+  argus pre-commit --validate         # Review with issue validation
 `);
 }
 
@@ -255,6 +264,7 @@ function parseOptions(args: string[]): {
   rulesDirs: string[];
   customAgentsDirs: string[];
   skipValidation: boolean;
+  validate: boolean;
   incremental: boolean;
   resetState: boolean;
   jsonLogs: boolean;
@@ -266,6 +276,7 @@ function parseOptions(args: string[]): {
     rulesDirs: [] as string[],
     customAgentsDirs: [] as string[],
     skipValidation: false,
+    validate: false,
     incremental: false,
     resetState: false,
     jsonLogs: false,
@@ -295,6 +306,8 @@ function parseOptions(args: string[]): {
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
+    } else if (arg === '--validate') {
+      options.validate = true;
     } else if (arg === '--incremental') {
       options.incremental = true;
     } else if (arg === '--reset-state') {
@@ -390,6 +403,54 @@ Target Branch: ${targetBranch}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '
 }
 
 /**
+ * Run the pre-commit command (local review)
+ */
+async function runPreCommitCommand(options: ReturnType<typeof parseOptions>): Promise<void> {
+  const repoPath = process.cwd();
+
+  // In JSON logs mode, skip the banner
+  if (!options.jsonLogs) {
+    console.log(`
+@argus/core - Pre-commit Review
+=================================
+Repository:    ${repoPath}
+Mode:          Local (git diff HEAD)
+=================================
+`);
+  }
+
+  // Pre-commit defaults to skip validation for speed
+  // Use --validate to enable validation
+  const skipValidation = !options.validate;
+
+  const report = await reviewLocal({
+    repoPath,
+    options: {
+      verbose: options.verbose,
+      skipValidation,
+      progressMode: options.jsonLogs ? 'json' : 'auto',
+    },
+  });
+
+  if (options.jsonLogs) {
+    const reportEvent = {
+      type: 'report',
+      data: {
+        report,
+        timestamp: new Date().toISOString(),
+      },
+    };
+    process.stderr.write(JSON.stringify(reportEvent) + '\n');
+  } else {
+    const formatted = formatReport(report, {
+      format: 'markdown',
+      language: options.language,
+    });
+    console.log(formatted);
+  }
+}
+
+/**
  * Main CLI function
  */
 export async function main(): Promise<void> {
@@ -411,6 +472,22 @@ export async function main(): Promise<void> {
   // Handle config command
   if (firstArg === 'config') {
     runConfigCommand(args.slice(1));
+    return;
+  }
+
+  // Handle pre-commit command
+  if (firstArg === 'pre-commit') {
+    const options = parseOptions(args.slice(1));
+    try {
+      await runPreCommitCommand(options);
+    } catch (error) {
+      if (error instanceof Error) {
+        console.error(`\nError: ${error.message}`);
+      } else {
+        console.error('\nUnexpected error:', error);
+      }
+      process.exit(1);
+    }
     return;
   }
 
