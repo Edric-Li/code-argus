@@ -43,7 +43,7 @@ import {
   DEFAULT_AGENT_MAX_TURNS,
   DEFAULT_AGENT_MODEL,
   DEFAULT_AGENT_MAX_THINKING_TOKENS,
-  MIN_CONFIDENCE_FOR_VALIDATION,
+  getMinConfidenceForValidation,
 } from './constants.js';
 import {
   createProgressPrinter,
@@ -514,35 +514,41 @@ export class ReviewOrchestrator {
       },
     });
 
-    // Step 3: Filter out low-confidence issues (skip validation for them)
-    const highConfidenceIssues = uniqueIssues.filter(
-      (issue) => issue.confidence >= MIN_CONFIDENCE_FOR_VALIDATION || issue.severity === 'critical'
-    );
+    // Step 3: Filter out low-confidence issues using dynamic thresholds by severity
+    // Critical issues have lower thresholds (0.2), suggestions have higher (0.7)
+    const highConfidenceIssues = uniqueIssues.filter((issue) => {
+      const threshold = getMinConfidenceForValidation(issue.severity);
+      return issue.confidence >= threshold;
+    });
 
     const lowConfidenceIssues: ValidatedIssue[] = uniqueIssues
-      .filter(
-        (issue) => issue.confidence < MIN_CONFIDENCE_FOR_VALIDATION && issue.severity !== 'critical'
-      )
-      .map((issue) => ({
-        ...issue,
-        validation_status: 'rejected' as const,
-        grounding_evidence: {
-          checked_files: [],
-          checked_symbols: [],
-          related_context: '置信度过低，自动跳过验证',
-          reasoning: `置信度 ${issue.confidence} 低于阈值 ${MIN_CONFIDENCE_FOR_VALIDATION}，自动拒绝`,
-        },
-        final_confidence: issue.confidence,
-        rejection_reason: `置信度过低 (${issue.confidence} < ${MIN_CONFIDENCE_FOR_VALIDATION})`,
-      }));
+      .filter((issue) => {
+        const threshold = getMinConfidenceForValidation(issue.severity);
+        return issue.confidence < threshold;
+      })
+      .map((issue) => {
+        const threshold = getMinConfidenceForValidation(issue.severity);
+        return {
+          ...issue,
+          validation_status: 'rejected' as const,
+          grounding_evidence: {
+            checked_files: [],
+            checked_symbols: [],
+            related_context: '置信度过低，自动跳过验证',
+            reasoning: `置信度 ${issue.confidence} 低于阈值 ${threshold}（${issue.severity} 级别），自动拒绝`,
+          },
+          final_confidence: issue.confidence,
+          rejection_reason: `置信度过低 (${issue.confidence} < ${threshold}，${issue.severity} 级别)`,
+        };
+      });
 
     if (lowConfidenceIssues.length > 0) {
       this.progress.info(
-        `跳过 ${lowConfidenceIssues.length} 个低置信度问题 (< ${MIN_CONFIDENCE_FOR_VALIDATION})`
+        `跳过 ${lowConfidenceIssues.length} 个低置信度问题 (动态阈值: critical≥0.2, error≥0.4, warning≥0.5, suggestion≥0.7)`
       );
       if (this.options.verbose) {
         console.log(
-          `[Orchestrator] Skipping validation for ${lowConfidenceIssues.length} low-confidence issues`
+          `[Orchestrator] Skipping validation for ${lowConfidenceIssues.length} low-confidence issues (using dynamic thresholds by severity)`
         );
       }
     }

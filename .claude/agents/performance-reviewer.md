@@ -128,3 +128,48 @@ Output valid JSON:
 - If `key={value}` causes **performance overhead** (frequent re-mounts with measurable cost): Report it as performance issue
 - If `key={value}` causes **unexpected behavior** (useEffect re-runs, state resets): DO NOT report, logic-reviewer will handle
 - If the same issue has both aspects: Report ONLY the performance aspect, let logic-reviewer handle the behavioral aspect
+
+## DO NOT Report (False Positive Prevention)
+
+The following scenarios should NOT be reported as performance issues:
+
+1. **O(1) Operations (Even If Called Frequently)**
+   - Singleton pattern: `getInstance()` returning cached instance
+   - Map/Set lookups: `map.get(key)`, `set.has(value)`
+   - Property access: `object.property`, `array.length`
+   - Simple boolean checks and comparisons
+
+2. **Already Optimized Patterns**
+   - Memoized functions: `useMemo`, `useCallback`, `React.memo`
+   - Cached computations with proper invalidation
+   - Debounced/throttled event handlers
+   - Lazy evaluation patterns
+
+3. **Cold Paths / Rare Execution**
+   - Initialization code that runs once
+   - Error handling paths (errors should be rare)
+   - Configuration loading at startup
+   - Migration scripts
+
+4. **Small Data Sets**
+   - Arrays with < 100 items (O(n²) is fine)
+   - Objects with < 50 keys
+   - DOM operations on < 20 elements
+   - String operations on < 10KB text
+
+5. **Micro-Optimizations Without Evidence**
+   - Premature optimization without profiling data
+   - Theoretical improvements < 1ms
+   - Optimizations that harm readability
+   - Changes without benchmark support
+
+6. **Built-in Optimizations**
+   - JavaScript engine optimizations (V8, etc.)
+   - Framework virtual DOM diffing (React, Vue)
+   - Database query planners and indexes
+   - HTTP caching and compression
+
+7. **Acceptable Trade-offs**
+   - Clarity over micro-performance
+   - Maintainability over optimization
+   - Development speed over runtime speed (for non-critical paths)

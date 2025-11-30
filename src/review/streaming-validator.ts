@@ -84,6 +84,8 @@ export interface StreamingValidatorOptions {
   maxConcurrentSessions?: number;
   /** Session idle timeout in ms (close session if no new issues) */
   sessionIdleTimeoutMs?: number;
+  /** Project-specific review rules (markdown format) */
+  projectRules?: string;
 }
 
 /**
@@ -98,6 +100,7 @@ interface ResolvedOptions {
   challengeMode: boolean;
   maxConcurrentSessions: number;
   sessionIdleTimeoutMs: number;
+  projectRules?: string;
 }
 
 /**
@@ -165,6 +168,7 @@ export class StreamingValidator {
       repoPath: options.repoPath,
       onProgress: options.onProgress,
       callbacks: options.callbacks,
+      projectRules: options.projectRules,
     };
   }
 
@@ -446,7 +450,9 @@ export class StreamingValidator {
 
     // Build prompt for an issue
     const buildIssuePrompt = (issue: RawIssue, isFirst: boolean): string => {
-      const systemPrompt = buildValidationSystemPrompt(issue.category);
+      const systemPrompt = buildValidationSystemPrompt(issue.category, {
+        projectRules: this.options.projectRules,
+      });
       const userPrompt = this.buildUserPrompt(issue);
 
       if (isFirst) {

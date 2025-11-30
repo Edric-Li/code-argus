@@ -25,6 +25,7 @@ import {
 import { extractJSON } from './utils/json-parser.js';
 import { withConcurrency } from '../utils/index.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
+import { CATEGORY_SPECIFIC_CHALLENGES } from './prompts/challenge-strategies.js';
 
 /**
  * Issue group for batch validation
@@ -436,68 +437,66 @@ export class IssueValidator {
   }
 
   /**
-   * Build in-session challenge prompt (simpler, no need to repeat context)
+   * Build in-session challenge prompt with category-specific questions
    *
    * Since we're in the same session, the AI already has:
    * - The issue details
    * - Files it has read
    * - Previous analysis context
    *
-   * So we just need to challenge the decision.
+   * So we just need to challenge the decision with category-specific questions.
    *
    * Progressive challenge strategy (5 rounds):
-   * - Round 2: Simple confirmation "你确定吗？"
-   * - Round 3: Request specific evidence "请提供更具体的代码证据"
-   * - Round 4: Devil's advocate "请考虑反面论点"
-   * - Round 5: Final decision "最后一轮，给出最终判断"
+   * - Round 2: Category-specific confirmation
+   * - Round 3: Category-specific evidence request
+   * - Round 4: Category-specific devil's advocate
+   * - Round 5: Final decision
    */
   private buildInSessionChallengePrompt(
-    _issue: RawIssue,
+    issue: RawIssue,
     previousResponse: ParsedValidationResponse,
     round: number,
     previousPreviousResponse?: ParsedValidationResponse
   ): string {
     const prevStatus = previousResponse.validation_status;
+    const categoryChallenge = CATEGORY_SPECIFIC_CHALLENGES[issue.category];
 
     switch (round) {
       case 2:
-        // Round 2: Simple confirmation
+        // Round 2: Category-specific confirmation
         return `你刚才的判断是 **${prevStatus}**。
 
 **请再次仔细审视并确认你的判断。你确定吗？**
 
-基于你已经阅读的代码和上下文，重新考虑:
-1. 是否有遗漏的上下文？
-2. 你的判断是否正确？
+${categoryChallenge.round2}
 
 如果判断有变化，请解释原因。如果判断不变，请确认并解释为什么你确定。
 
 请输出 JSON 结果。`;
 
       case 3: {
-        // Round 3: Request specific evidence
+        // Round 3: Category-specific evidence request
         const changeNote = previousPreviousResponse
           ? `你改变了判断: **${previousPreviousResponse.validation_status}** → **${prevStatus}**`
           : `你的判断是 **${prevStatus}**`;
         return `${changeNote}
 
-**请提供更具体的代码证据来支持你当前的判断：**
-1. 指出具体的代码行号
-2. 说明为什么这些代码构成/不构成问题
-3. 如果有相关的上下文（如错误处理、测试覆盖），请一并说明
+${categoryChallenge.round3}
 
 请输出 JSON 结果。`;
       }
 
       case 4: {
-        // Round 4: Devil's advocate
+        // Round 4: Category-specific devil's advocate
         const oppositeView =
           prevStatus === 'confirmed'
-            ? '这个问题可能**不存在**的原因（如：已有防护措施、边界条件不可达、类型系统保证等）'
-            : '这个问题可能**确实存在**的原因（如：缺少校验、边界情况未处理、潜在风险等）';
+            ? categoryChallenge.round4Confirmed
+            : categoryChallenge.round4Rejected;
         return `你再次改变了判断。
 
-**请扮演魔鬼代言人，认真考虑${oppositeView}。**
+**请扮演魔鬼代言人，认真考虑以下反面论点：**
+
+${oppositeView}
 
 在充分考虑反面论点后，给出你经过深思熟虑的判断。
 
@@ -1108,12 +1107,12 @@ ${issueDescriptions}
   }
 
   /**
-   * Build challenge prompt for group validation
+   * Build challenge prompt for group validation with category-specific questions
    *
    * Progressive challenge strategy (5 rounds):
-   * - Round 2: Simple confirmation
-   * - Round 3: Request specific evidence
-   * - Round 4: Devil's advocate
+   * - Round 2: Category-specific confirmation
+   * - Round 3: Category-specific evidence request
+   * - Round 4: Category-specific devil's advocate
    * - Round 5: Final decision
    */
   private buildGroupChallengePrompt(
@@ -1124,41 +1123,56 @@ ${issueDescriptions}
     const summaries = issues
       .map((issue, idx) => {
         const resp = previousResponses[idx];
-        return `- ${issue.id}: ${resp?.validation_status || 'unknown'}`;
+        return `- ${issue.id} (${issue.category}): ${resp?.validation_status || 'unknown'}`;
       })
       .join('\n');
 
     const issueCount = issues.length;
 
+    // Get primary category for group (most common)
+    const categories = issues.map((i) => i.category);
+    const primaryCategory =
+      categories.sort(
+        (a, b) =>
+          categories.filter((c) => c === b).length - categories.filter((c) => c === a).length
+      )[0] || 'logic';
+    const categoryChallenge = CATEGORY_SPECIFIC_CHALLENGES[primaryCategory];
+
     switch (round) {
       case 2:
-        // Round 2: Simple confirmation
+        // Round 2: Category-specific confirmation
         return `你刚才的判断是:
 ${summaries}
 
 **请再次仔细审视并确认你的判断。你确定吗？**
 
-基于你已经阅读的代码，重新考虑每个问题。如果判断有变化，请解释原因。
+${categoryChallenge.round2}
+
+如果判断有变化，请解释原因。
 
 请输出 JSON 结果（包含所有 ${issueCount} 个问题的验证结果）。`;
 
       case 3:
-        // Round 3: Request specific evidence
+        // Round 3: Category-specific evidence request
         return `你改变了部分判断。
 
-**请为每个问题提供更具体的代码证据：**
-1. 指出具体的代码行号
-2. 说明为什么这些代码构成/不构成问题
+${categoryChallenge.round3}
+
+请为每个问题提供具体的代码证据。
 
 请输出 JSON 结果（包含所有 ${issueCount} 个问题的验证结果）。`;
 
       case 4:
-        // Round 4: Devil's advocate
+        // Round 4: Category-specific devil's advocate
         return `你再次改变了判断。
 
 **请扮演魔鬼代言人：**
-- 对于你判定为 confirmed 的问题，考虑它可能不存在的原因
-- 对于你判定为 rejected 的问题，考虑它可能确实存在的原因
+
+对于 confirmed 的问题，考虑：
+${categoryChallenge.round4Confirmed}
+
+对于 rejected 的问题，考虑：
+${categoryChallenge.round4Rejected}
 
 在充分考虑反面论点后，给出你经过深思熟虑的判断。
 

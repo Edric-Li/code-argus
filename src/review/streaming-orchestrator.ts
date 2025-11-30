@@ -48,6 +48,7 @@ import {
 import {
   loadRules,
   getRulesForAgent,
+  rulesToPromptText,
   isEmptyRules,
   type RulesConfig,
   type RuleAgentType,
@@ -311,12 +312,15 @@ export class StreamingReviewOrchestrator {
       });
 
       // Create streaming validator with progress callbacks
+      // Pass project rules so validator can use rule priority logic
+      const projectRulesText = rulesToPromptText(this.rulesConfig);
       this.streamingValidator = this.options.skipValidation
         ? undefined
         : createStreamingValidator({
             repoPath: reviewRepoPath,
             verbose: this.options.verbose,
             maxConcurrentSessions: 5,
+            projectRules: projectRulesText || undefined,
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
@@ -446,7 +450,9 @@ export class StreamingReviewOrchestrator {
               });
             },
             onIssueDiscovered: (issue) => {
-              this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
+              // Note: Don't call this.progress.issueDiscovered() here
+              // because enqueue() will trigger the callback which already calls it.
+              // Only send status update for the web monitor.
               this.sendStatus({
                 type: 'progress',
                 message: `发现问题: ${issue.title}`,
@@ -460,12 +466,17 @@ export class StreamingReviewOrchestrator {
               });
 
               // Enqueue custom agent issues for validation
+              // This will trigger the streaming validator's onIssueDiscovered callback
+              // which handles CLI progress output
               if (!this.options.skipValidation && this.streamingValidator) {
                 const autoRejected = this.streamingValidator.enqueue(issue);
                 if (autoRejected) {
                   this.autoRejectedIssues.push(autoRejected);
                 }
               } else if (this.options.skipValidation) {
+                // When skipping validation, we need to print the issue here
+                // since enqueue() won't be called
+                this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
                 this.rawIssuesForSkipMode.push(issue);
               }
             },

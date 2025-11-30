@@ -101,15 +101,44 @@ export const VALIDATION_PROMPT_CONFIGS: Record<IssueCategory, ValidationPromptCo
 };
 
 /**
- * Build complete validation system prompt for a specific category
- * Combines base template with category-specific rules
+ * Options for building validation system prompt
  */
-export function buildValidationSystemPrompt(category: IssueCategory): string {
+export interface ValidationPromptOptions {
+  /** Project-specific review rules (markdown format) */
+  projectRules?: string;
+}
+
+/**
+ * Build complete validation system prompt for a specific category
+ * Combines base template with category-specific rules and project rules
+ */
+export function buildValidationSystemPrompt(
+  category: IssueCategory,
+  options?: ValidationPromptOptions
+): string {
   const baseTemplate = loadBaseValidationTemplate();
   const categoryConfig = VALIDATION_PROMPT_CONFIGS[category];
 
-  // Combine base template with category-specific rules
-  const prompt = [baseTemplate, '', categoryConfig.additionalSystemPrompt, ''].join('\n');
+  // Build project rules section if provided
+  const projectRulesSection = options?.projectRules
+    ? `
+## Project-Specific Review Guidelines
+
+> These rules are explicitly defined by the project team and take precedence over project conventions.
+> If an issue violates these rules, it should be **confirmed** even if similar patterns exist in the codebase.
+
+${options.projectRules}
+`
+    : '';
+
+  // Combine base template with category-specific rules and project rules
+  const prompt = [
+    baseTemplate,
+    '',
+    categoryConfig.additionalSystemPrompt,
+    '',
+    projectRulesSection,
+  ].join('\n');
 
   return prompt;
 }
