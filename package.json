@@ -1,6 +1,6 @@
 {
   "name": "code-argus",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-powered automated code review CLI tool using Claude Agent SDK with multi-agent orchestration",
   "type": "module",
   "main": "./dist/index.js",
@@ -23,9 +23,10 @@
   "engines": {
     "node": ">=18"
   },
+  "homepage": "https://github.com/Edric-Li/code-argus",
   "repository": {
     "type": "git",
-    "url": "https://github.com/anthropics/code-argus.git",
+    "url": "https://github.com/Edric-Li/code-argus.git",
     "directory": "core"
   },
   "keywords": [
