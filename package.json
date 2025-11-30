@@ -6,8 +6,8 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "argus": "./dist/index.js",
-    "code-argus": "./dist/index.js"
+    "argus": "dist/index.js",
+    "code-argus": "dist/index.js"
   },
   "exports": {
     ".": {
