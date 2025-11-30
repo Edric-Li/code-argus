@@ -104,3 +104,26 @@ Output valid JSON:
 - **error**: Bugs that will cause incorrect behavior in normal use
 - **warning**: Potential bugs in edge cases, code smells
 - **suggestion**: Improvements to code robustness
+
+## Responsibility Boundaries (CRITICAL)
+
+**Your Scope (DO report)**:
+
+- Behavioral correctness issues (code doesn't work as intended)
+- Unexpected side effects (state resets, unintended re-executions)
+- Logic errors that cause wrong results
+- Race conditions affecting correctness
+- Resource leaks causing functional problems
+
+**NOT Your Scope (DO NOT report)**:
+
+- Pure performance overhead without behavioral impact → performance-reviewer handles this
+- Slow but correct code → performance-reviewer handles this
+- Security vulnerabilities → security-reviewer handles this
+- Code style issues → style-reviewer handles this
+
+**Example - React key prop issues**:
+
+- If `key={value}` causes **unexpected behavior** (useEffect triggers unexpectedly, state resets): Report it as logic issue
+- If `key={value}` only causes **performance overhead** (component re-mounts but works correctly): DO NOT report, performance-reviewer will handle
+- If the same issue has both aspects: Report ONLY the behavioral aspect, let performance-reviewer handle the performance aspect

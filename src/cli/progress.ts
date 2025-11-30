@@ -55,6 +55,7 @@ export interface IProgressPrinter {
     rejected: number;
     uncertain: number;
     autoRejected: number;
+    deduplicated?: number;
     tokensUsed: number;
     timeMs: number;
   }): void;
@@ -390,6 +391,7 @@ export class ProgressPrinter implements IProgressPrinter {
     rejected: number;
     uncertain: number;
     autoRejected: number;
+    deduplicated?: number;
     tokensUsed: number;
     timeMs: number;
   }): void {
@@ -403,6 +405,9 @@ export class ProgressPrinter implements IProgressPrinter {
     console.log(
       `         总计: ${stats.total} | ${this.c('green', `确认: ${stats.confirmed}`)} | ${this.c('red', `拒绝: ${stats.rejected}`)} | ${this.c('yellow', `不确定: ${stats.uncertain}`)}`
     );
+    if (stats.deduplicated && stats.deduplicated > 0) {
+      console.log(`         实时去重: ${stats.deduplicated} (重复问题)`);
+    }
     if (stats.autoRejected > 0) {
       console.log(`         自动跳过: ${stats.autoRejected} (低置信度)`);
     }

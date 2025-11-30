@@ -60,6 +60,7 @@ import {
   type LoadedCustomAgent,
   type CustomAgentResult,
 } from './custom-agents/index.js';
+import { createRealtimeDeduplicator, type RealtimeDeduplicator } from './realtime-deduplicator.js';
 
 /**
  * Default orchestrator options
@@ -89,6 +90,7 @@ export class StreamingReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
   private statusServer?: StatusServer;
   private streamingValidator?: StreamingValidator;
+  private realtimeDeduplicator?: RealtimeDeduplicator;
   private progress: IProgressPrinter;
   private rulesConfig: RulesConfig = EMPTY_RULES_CONFIG;
   private autoRejectedIssues: ValidatedIssue[] = [];
@@ -288,6 +290,25 @@ export class StreamingReviewOrchestrator {
       // Reset state for this review
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
+
+      // Create realtime deduplicator with progress callbacks
+      this.realtimeDeduplicator = createRealtimeDeduplicator({
+        verbose: this.options.verbose,
+        onDeduplicated: (newIssue, existingIssue, reason) => {
+          this.progress.info(
+            `去重: "${newIssue.title}" 与 "${existingIssue.title}" 重复 (${reason})`
+          );
+          this.sendStatus({
+            type: 'progress',
+            message: `问题去重: ${newIssue.title}`,
+            details: {
+              issue_id: newIssue.id,
+              duplicate_of: existingIssue.id,
+              reason,
+            },
+          });
+        },
+      });
 
       // Create streaming validator with progress callbacks
       this.streamingValidator = this.options.skipValidation
@@ -500,13 +521,19 @@ export class StreamingReviewOrchestrator {
         const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
         const uncertain = validatedIssues.length - confirmed - rejected;
 
+        // Get deduplication stats
+        const dedupStats = this.realtimeDeduplicator?.getStats();
+        const dedupTokens = dedupStats?.tokensUsed || 0;
+        tokensUsed += dedupTokens;
+
         this.progress.validationSummary({
           total: validatedIssues.length,
           confirmed,
           rejected,
           uncertain,
           autoRejected: this.autoRejectedIssues.length,
-          tokensUsed: validationTokens,
+          deduplicated: dedupStats?.deduplicated || 0,
+          tokensUsed: validationTokens + dedupTokens,
           timeMs: Date.now() - startTime,
         });
       } else if (this.options.skipValidation) {
@@ -775,6 +802,7 @@ export class StreamingReviewOrchestrator {
    */
   private createReportIssueMcpServer() {
     const validator = this.streamingValidator;
+    const deduplicator = this.realtimeDeduplicator;
     const verbose = this.options.verbose;
     const skipValidation = this.options.skipValidation;
 
@@ -828,6 +856,23 @@ Write all text (title, description, suggestion) in Chinese.`,
                 source_agent: agentType,
               };
 
+              // Step 1: Realtime deduplication check
+              if (deduplicator) {
+                const dedupResult = await deduplicator.checkAndAdd(rawIssue);
+                if (dedupResult.isDuplicate) {
+                  // Issue is a duplicate - skip validation
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `⚠️ 问题已去重 (ID: ${issueId})\n与已有问题重复: ${dedupResult.duplicateOf?.title}\n原因: ${dedupResult.reason || '相同根因'}`,
+                      },
+                    ],
+                  };
+                }
+              }
+
+              // Step 2: Process accepted issue
               if (skipValidation) {
                 // Skip validation mode - just collect issues
                 this.rawIssuesForSkipMode.push(rawIssue);

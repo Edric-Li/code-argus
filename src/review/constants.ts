@@ -9,9 +9,15 @@
 export const DEFAULT_AGENT_MODEL = 'claude-opus-4-5-20251101';
 
 /**
- * Default model for deduplication
+ * Default model for deduplication (post-validation batch dedup)
  */
 export const DEFAULT_DEDUP_MODEL = 'claude-opus-4-5-20251101';
+
+/**
+ * Default model for realtime deduplication
+ * Use Haiku for speed and cost efficiency since it runs on every overlapping issue
+ */
+export const DEFAULT_REALTIME_DEDUP_MODEL = 'claude-3-5-haiku-20241022';
 
 /**
  * Max thinking tokens for agents (0 = disable extended thinking)
