@@ -9,7 +9,7 @@ AI-powered automated code review CLI tool using Claude Agent SDK with multi-agen
 - **Multi-Agent Review** - 4 specialized agents review in parallel: security, logic, performance, style
 - **Smart Agent Selection** - Automatically selects agents based on file characteristics
 - **Issue Validation** - Challenge-mode multi-round validation reduces false positives
-- **Cross-Agent Deduplication** - LLM semantic deduplication avoids duplicate reports
+- **Realtime Deduplication** - Two-layer dedup: fast rule-based check + LLM semantic verification
 - **Project Standards Aware** - Auto-extracts ESLint/TypeScript/Prettier configs
 - **Custom Rules** - Team-specific review rules and checklists
 - **Multiple Output Formats** - JSON, Markdown, Summary, PR Comments
@@ -118,7 +118,8 @@ src/
 │   ├── streaming-orchestrator.ts  # 流式审查模式
 │   ├── agent-selector.ts # 智能 Agent 选择
 │   ├── validator.ts      # 问题验证（挑战模式）
-│   ├── deduplicator.ts   # 跨 Agent 去重
+│   ├── realtime-deduplicator.ts  # 实时去重（规则+LLM 两层）
+│   ├── deduplicator.ts   # 批量语义去重
 │   ├── aggregator.ts     # 问题聚合
 │   ├── report.ts         # 报告生成
 │   ├── prompts/          # Agent Prompt 构建
@@ -226,8 +227,8 @@ npm run test:coverage          # 覆盖率报告
 
 1. **上下文构建** - 获取三点式 Diff，解析文件，提取项目标准
 2. **智能选择** - 根据文件特征选择需要的 Agent
-3. **并行审查** - 4 个专业 Agent 并发执行
-4. **去重** - LLM 语义去重，合并相似问题
+3. **并行审查** - 4 个专业 Agent 并发执行，实时去重
+4. **实时去重** - 同文件+行号重叠 → 触发 LLM 语义判断，避免重复问题
 5. **验证** - 挑战模式多轮验证，过滤误报
 6. **报告** - 生成结构化审查报告
 
