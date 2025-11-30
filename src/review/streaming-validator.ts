@@ -265,10 +265,10 @@ export class StreamingValidator {
 
   /**
    * Wait for all validation to complete and return results
-   * @param timeoutMs Optional timeout in milliseconds (default: 10 minutes)
+   * @param timeoutMs Optional timeout in milliseconds (default: 30 minutes)
    */
   async flush(
-    timeoutMs: number = 600000
+    timeoutMs: number = 1800000
   ): Promise<{ issues: ValidatedIssue[]; tokensUsed: number }> {
     this.markAgentsComplete();
 
