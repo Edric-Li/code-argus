@@ -1,6 +1,6 @@
 {
   "name": "code-argus",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "AI-powered automated code review CLI tool using Claude Agent SDK with multi-agent orchestration",
   "type": "module",
   "main": "./dist/index.js",
@@ -65,7 +65,6 @@
       "prettier --write"
     ]
   },
-  "keywords": [],
   "author": "",
   "license": "MIT",
   "devDependencies": {
