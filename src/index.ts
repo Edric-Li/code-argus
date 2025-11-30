@@ -43,6 +43,8 @@ Options (review command):
   --rules-dir=<path>   Custom review rules directory
   --agents-dir=<path>  Custom agent definitions directory
   --skip-validation    Skip issue validation (faster but less accurate)
+  --incremental        Enable incremental review (only review new commits)
+  --reset-state        Reset review state and force full review
   --monitor            Enable real-time status monitoring UI
   --monitor-port=<num> Status monitor port (default: 3456)
   --verbose            Enable verbose output
@@ -254,6 +256,8 @@ function parseOptions(args: string[]): {
   rulesDirs: string[];
   customAgentsDirs: string[];
   skipValidation: boolean;
+  incremental: boolean;
+  resetState: boolean;
   monitor: boolean;
   monitorPort: number;
   verbose: boolean;
@@ -265,6 +269,8 @@ function parseOptions(args: string[]): {
     rulesDirs: [] as string[],
     customAgentsDirs: [] as string[],
     skipValidation: false,
+    incremental: false,
+    resetState: false,
     monitor: false,
     monitorPort: 3456,
     verbose: false,
@@ -303,6 +309,10 @@ function parseOptions(args: string[]): {
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
+    } else if (arg === '--incremental') {
+      options.incremental = true;
+    } else if (arg === '--reset-state') {
+      options.resetState = true;
     } else if (arg === '--monitor') {
       options.monitor = true;
     } else if (arg.startsWith('--monitor-port=')) {
@@ -319,6 +329,13 @@ function parseOptions(args: string[]): {
   for (const configDir of options.configDirs) {
     options.rulesDirs.push(`${configDir}/rules`);
     options.customAgentsDirs.push(`${configDir}/agents`);
+  }
+
+  // Warn about conflicting options
+  if (options.incremental && options.resetState) {
+    console.warn(
+      'Warning: --reset-state will clear previous review state before running incremental review'
+    );
   }
 
   return options;
@@ -341,6 +358,7 @@ async function runReviewCommand(
     options.customAgentsDirs.length > 0
       ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
       : '';
+  const modeInfo = options.incremental ? 'Mode:          Incremental' : '';
 
   console.log(`
 @argus/core - AI Code Review
@@ -348,7 +366,7 @@ async function runReviewCommand(
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch}
 Target Branch: ${targetBranch}
-Format:        ${options.format}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
+Format:        ${options.format}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
 
@@ -359,6 +377,8 @@ Format:        ${options.format}${configInfo ? '\n' + configInfo : ''}${rulesInf
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
+      incremental: options.incremental,
+      resetState: options.resetState,
       monitor: options.monitor,
       monitorPort: options.monitorPort,
       rulesDirs: options.rulesDirs,

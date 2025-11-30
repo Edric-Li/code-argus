@@ -224,3 +224,179 @@ export function removeWorktree(worktreeInfo: WorktreeInfo): void {
     }
   }
 }
+
+// ============================================================================
+// Incremental Diff Operations
+// ============================================================================
+
+/**
+ * Options for incremental diff
+ */
+export interface IncrementalDiffOptions {
+  /** Path to the git repository */
+  repoPath: string;
+  /** Source branch name */
+  sourceBranch: string;
+  /** Target branch name */
+  targetBranch: string;
+  /** Last reviewed commit SHA (for incremental diff) */
+  lastReviewedSha: string;
+  /** Remote name (default: 'origin') */
+  remote?: string;
+  /** Skip fetching remote (default: false) */
+  skipFetch?: boolean;
+}
+
+/**
+ * Result of incremental diff operation
+ */
+export interface IncrementalDiffResult extends DiffResult {
+  /** Whether this is an incremental diff */
+  isIncremental: boolean;
+  /** Start SHA (last reviewed) */
+  fromSha: string;
+  /** End SHA (current) */
+  toSha: string;
+  /** Number of new commits */
+  newCommitCount: number;
+}
+
+/**
+ * Get current HEAD SHA for a remote branch
+ */
+export function getRemoteBranchSha(
+  repoPath: string,
+  branch: string,
+  remote: string = 'origin'
+): string {
+  const absolutePath = resolve(repoPath);
+  try {
+    const sha = execSync(`git rev-parse ${remote}/${branch}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+    return sha;
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to get SHA for ${remote}/${branch}`,
+      'REF_NOT_FOUND',
+      err.stderr || err.message
+    );
+  }
+}
+
+/**
+ * Get incremental diff between last reviewed commit and current HEAD
+ *
+ * Uses `git diff lastReviewedSha...origin/sourceBranch` to get only changes
+ * since the last review.
+ *
+ * @param options - Incremental diff options
+ * @returns Incremental diff result
+ * @throws {GitError} If git command fails
+ */
+export function getIncrementalDiff(options: IncrementalDiffOptions): IncrementalDiffResult {
+  const {
+    repoPath,
+    sourceBranch,
+    targetBranch,
+    lastReviewedSha,
+    remote = 'origin',
+    skipFetch = false,
+  } = options;
+
+  const absolutePath = resolve(repoPath);
+
+  // Validate repository path
+  if (!existsSync(absolutePath)) {
+    throw new GitError(`Repository path does not exist: ${absolutePath}`, 'REPO_NOT_FOUND');
+  }
+
+  // Fetch latest remote refs (unless skipped)
+  if (!skipFetch) {
+    fetchRemote(absolutePath, remote);
+  }
+
+  // Get current SHA
+  const currentSha = getRemoteBranchSha(absolutePath, sourceBranch, remote);
+
+  // Count new commits
+  let newCommitCount = 0;
+  try {
+    const count = execSync(`git rev-list --count ${lastReviewedSha}..${currentSha}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+    newCommitCount = parseInt(count, 10);
+  } catch {
+    // Log warning but continue - commit count is informational only
+    console.warn(
+      `[git/diff] Failed to count commits between ${lastReviewedSha.slice(0, 7)}..${currentSha.slice(0, 7)}`
+    );
+    newCommitCount = 0;
+  }
+
+  // Execute incremental diff: lastReviewedSha...origin/sourceBranch
+  // This shows changes from lastReviewedSha to current HEAD of sourceBranch
+  const remoteSourceBranch = `${remote}/${sourceBranch}`;
+
+  try {
+    const diff = execSync(`git diff ${lastReviewedSha}...${remoteSourceBranch}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+    });
+
+    return {
+      diff,
+      sourceBranch,
+      targetBranch,
+      repoPath: absolutePath,
+      remote,
+      isIncremental: true,
+      fromSha: lastReviewedSha,
+      toSha: currentSha,
+      newCommitCount,
+    };
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to get incremental diff from ${lastReviewedSha} to ${remoteSourceBranch}`,
+      'DIFF_FAILED',
+      err.stderr || err.message
+    );
+  }
+}
+
+/**
+ * Get merge base between two branches
+ */
+export function getMergeBase(
+  repoPath: string,
+  branch1: string,
+  branch2: string,
+  remote: string = 'origin'
+): string {
+  const absolutePath = resolve(repoPath);
+  const ref1 = `${remote}/${branch1}`;
+  const ref2 = `${remote}/${branch2}`;
+
+  try {
+    const mergeBase = execSync(`git merge-base ${ref1} ${ref2}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+    return mergeBase;
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to find merge base between ${ref1} and ${ref2}`,
+      'MERGE_BASE_FAILED',
+      err.stderr || err.message
+    );
+  }
+}

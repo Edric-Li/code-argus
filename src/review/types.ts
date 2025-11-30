@@ -405,6 +405,16 @@ export interface OrchestratorOptions {
    * When true, only rule-based triggers are used
    */
   disableCustomAgentLLM?: boolean;
+  /**
+   * Enable incremental review mode (default: false)
+   * When enabled, only review changes since the last reviewed commit
+   */
+  incremental?: boolean;
+  /**
+   * Reset review state before running (default: false)
+   * Forces a full review and clears the previous state
+   */
+  resetState?: boolean;
 }
 
 /**

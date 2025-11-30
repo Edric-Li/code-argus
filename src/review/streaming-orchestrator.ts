@@ -80,6 +80,8 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   rulesDirs: [],
   customAgentsDirs: [],
   disableCustomAgentLLM: false,
+  incremental: false,
+  resetState: false,
 };
 
 /**

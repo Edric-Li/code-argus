@@ -31,8 +31,15 @@ import {
   fetchRemote,
   createWorktreeForReview,
   removeWorktree,
+  getIncrementalDiff,
+  getRemoteBranchSha,
   type WorktreeInfo,
 } from '../git/diff.js';
+import {
+  createStateManager,
+  type ReviewStateManager,
+  type IncrementalCheckResult,
+} from './state-manager.js';
 import { parseDiff, type DiffFile } from '../git/parser.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
@@ -68,6 +75,8 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   rulesDirs: [],
   customAgentsDirs: [],
   disableCustomAgentLLM: false,
+  incremental: false,
+  resetState: false,
 };
 
 /**
@@ -79,6 +88,8 @@ export class ReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
   private statusServer?: StatusServer;
   private progress: IProgressPrinter;
+  private stateManager?: ReviewStateManager;
+  private incrementalInfo?: IncrementalCheckResult;
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -92,6 +103,37 @@ export class ReviewOrchestrator {
     const startTime = Date.now();
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
+    let currentSha = '';
+
+    // Initialize state manager for incremental review
+    this.stateManager = createStateManager(input.repoPath, this.options.verbose);
+
+    // Handle reset state
+    if (this.options.resetState) {
+      this.progress.info('重置审查状态...');
+      this.stateManager.clear(input.sourceBranch);
+    }
+
+    // Check for incremental review possibility
+    if (this.options.incremental) {
+      this.progress.progress('检查增量审查条件...');
+      this.incrementalInfo = this.stateManager.checkIncremental(
+        input.sourceBranch,
+        input.targetBranch
+      );
+
+      if (this.incrementalInfo.canIncrement) {
+        this.progress.success(
+          `增量审查模式: ${this.incrementalInfo.newCommitCount} 个新提交 ` +
+            `(${this.incrementalInfo.lastReviewedSha?.slice(0, 7)}..${this.incrementalInfo.currentSha.slice(0, 7)})`
+        );
+        currentSha = this.incrementalInfo.currentSha;
+      } else {
+        this.progress.info(`无法增量审查: ${this.incrementalInfo.reason}`);
+        this.progress.info('切换到完整审查模式');
+        this.incrementalInfo = undefined;
+      }
+    }
 
     // Start status server if monitoring is enabled
     if (this.options.monitor) {
@@ -275,6 +317,45 @@ export class ReviewOrchestrator {
       // Final summary
       this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
 
+      // Save review state for incremental reviews
+      if (this.stateManager) {
+        try {
+          // Get current SHA if not already set
+          if (!currentSha) {
+            currentSha = getRemoteBranchSha(input.repoPath, input.sourceBranch);
+          }
+
+          const state = this.stateManager.createState({
+            branch: input.sourceBranch,
+            targetBranch: input.targetBranch,
+            currentSha,
+            issues: aggregatedIssues.map((issue) => ({
+              file: issue.file,
+              line_start: issue.line_start,
+              line_end: issue.line_end,
+              category: issue.category,
+              title: issue.title,
+            })),
+            metadata: {
+              totalIssues: aggregatedIssues.length,
+              reviewTimeMs: report.metadata.review_time_ms,
+              agentsUsed: agentsToRun,
+            },
+          });
+
+          this.stateManager.save(state);
+          this.progress.info(`审查状态已保存 (${currentSha.slice(0, 7)})`);
+
+          if (this.options.verbose) {
+            console.log(
+              `[Orchestrator] Review state saved to: ${this.stateManager.getStateLocation(input.sourceBranch)}`
+            );
+          }
+        } catch (stateError) {
+          console.warn('[Orchestrator] Failed to save review state:', stateError);
+        }
+      }
+
       return report;
     } catch (error) {
       this.sendStatus({
@@ -318,6 +399,7 @@ export class ReviewOrchestrator {
    * Build the review context from input
    *
    * Optimized: DiffAnalyzer + Standards run in parallel
+   * Supports incremental diff when incrementalInfo is available
    */
   private async buildContext(
     input: OrchestratorInput
@@ -333,16 +415,44 @@ export class ReviewOrchestrator {
     fetchRemote(repoPath, remote);
     this.progress.success('获取远程 refs 完成');
 
-    // Step 2: Get diff
-    this.progress.progress(`获取 diff: ${remote}/${targetBranch}...${remote}/${sourceBranch}`);
-    const diffResult = getDiffWithOptions({
-      sourceBranch,
-      targetBranch,
-      repoPath,
-      skipFetch: true,
-    });
-    const diffSizeKB = Math.round(diffResult.diff.length / 1024);
-    this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
+    // Step 2: Get diff (incremental or full)
+    let diffResult;
+    if (this.incrementalInfo?.canIncrement && this.incrementalInfo.lastReviewedSha) {
+      // Incremental diff: only changes since last review
+      const lastSha = this.incrementalInfo.lastReviewedSha;
+      this.progress.progress(`获取增量 diff: ${lastSha.slice(0, 7)}...${remote}/${sourceBranch}`);
+
+      const incrementalResult = getIncrementalDiff({
+        repoPath,
+        sourceBranch,
+        targetBranch,
+        lastReviewedSha: lastSha,
+        skipFetch: true,
+      });
+
+      diffResult = incrementalResult;
+      const diffSizeKB = Math.round(diffResult.diff.length / 1024);
+      this.progress.success(
+        `获取增量 diff 完成 (${diffSizeKB} KB, ${incrementalResult.newCommitCount} 个新提交)`
+      );
+
+      if (this.options.verbose) {
+        console.log(
+          `[Orchestrator] Incremental diff: ${incrementalResult.fromSha.slice(0, 7)}..${incrementalResult.toSha.slice(0, 7)}`
+        );
+      }
+    } else {
+      // Full diff: all changes from target to source
+      this.progress.progress(`获取 diff: ${remote}/${targetBranch}...${remote}/${sourceBranch}`);
+      diffResult = getDiffWithOptions({
+        sourceBranch,
+        targetBranch,
+        repoPath,
+        skipFetch: true,
+      });
+      const diffSizeKB = Math.round(diffResult.diff.length / 1024);
+      this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
+    }
 
     // Step 3: Parse diff
     this.progress.progress('解析 diff...');
