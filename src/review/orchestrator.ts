@@ -43,7 +43,6 @@ import {
 import { parseDiff, type DiffFile } from '../git/parser.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
-import { StatusServer } from '../monitor/status-server.js';
 import { createValidator } from './validator.js';
 import { createDeduplicator } from './deduplicator.js';
 import {
@@ -66,9 +65,6 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
-  monitor: false,
-  monitorPort: 3456,
-  monitorStopDelay: 5000,
   showProgress: true,
   smartAgentSelection: true,
   disableSelectionLLM: false,
@@ -86,7 +82,6 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
  */
 export class ReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
-  private statusServer?: StatusServer;
   private progress: IProgressPrinter;
   private stateManager?: ReviewStateManager;
   private incrementalInfo?: IncrementalCheckResult;
@@ -135,12 +130,6 @@ export class ReviewOrchestrator {
       }
     }
 
-    // Start status server if monitoring is enabled
-    if (this.options.monitor) {
-      this.statusServer = new StatusServer(this.options.monitorPort);
-      await this.statusServer.start();
-    }
-
     try {
       const totalPhases = this.options.skipValidation ? 4 : 5;
       let currentPhase = 0;
@@ -151,11 +140,6 @@ export class ReviewOrchestrator {
       if (this.options.verbose) {
         console.log('[Orchestrator] Building review context...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Context Building',
-        message: '正在构建审查上下文...',
-      });
 
       const { context, diffFiles } = await this.buildContext(input);
       this.progress.success(`上下文构建完成 (${context.fileAnalyses.length} 个文件)`);
@@ -169,11 +153,6 @@ export class ReviewOrchestrator {
         if (this.options.verbose) {
           console.log('[Orchestrator] Running smart agent selection...');
         }
-        this.sendStatus({
-          type: 'phase',
-          phase: 'Agent Selection',
-          message: '正在智能选择需要运行的 Agents...',
-        });
 
         selectionResult = await selectAgents(diffFiles, {
           verbose: this.options.verbose,
@@ -216,11 +195,6 @@ export class ReviewOrchestrator {
       if (this.options.verbose) {
         console.log(`[Orchestrator] Creating worktree for source branch: ${input.sourceBranch}`);
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Worktree',
-        message: `正在创建 worktree: ${input.sourceBranch}...`,
-      });
       worktreeInfo = createWorktreeForReview(input.repoPath, input.sourceBranch);
       this.progress.success(`Worktree 已创建: ${worktreeInfo.worktreePath}`);
       if (this.options.verbose) {
@@ -233,11 +207,6 @@ export class ReviewOrchestrator {
       if (this.options.verbose) {
         console.log('[Orchestrator] Running specialist agents with streaming validation...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Agent Execution & Validation',
-        message: '正在运行专业审查 Agents 并实时验证...',
-      });
 
       const { validatedIssues, checklists, tokens_used } =
         await this.runAgentsWithStreamingValidation(context, agentsToRun);
@@ -253,11 +222,6 @@ export class ReviewOrchestrator {
       if (this.options.verbose) {
         console.log('[Orchestrator] Aggregating results...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Aggregation',
-        message: '正在聚合结果...',
-      });
 
       const aggregationResult = aggregate(validatedIssues, checklists);
       const aggregatedIssues = aggregationResult.issues;
@@ -276,11 +240,6 @@ export class ReviewOrchestrator {
       // Phase 4: Generate report
       currentPhase++;
       this.progress.phase(currentPhase, totalPhases, '生成报告...');
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Report Generation',
-        message: '正在生成报告...',
-      });
 
       const metrics = calculateMetrics(validatedIssues, aggregatedIssues);
       const metadata = {
@@ -303,16 +262,6 @@ export class ReviewOrchestrator {
       if (this.options.verbose) {
         console.log(`[Orchestrator] Review completed in ${report.metadata.review_time_ms}ms`);
       }
-
-      this.sendStatus({
-        type: 'complete',
-        message: `审查完成! 发现 ${aggregatedIssues.length} 个问题`,
-        details: {
-          issues: aggregatedIssues.length,
-          time_ms: report.metadata.review_time_ms,
-          tokens_used: tokensUsed,
-        },
-      });
 
       // Final summary
       this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
@@ -357,12 +306,6 @@ export class ReviewOrchestrator {
       }
 
       return report;
-    } catch (error) {
-      this.sendStatus({
-        type: 'error',
-        message: `审查失败: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      throw error;
     } finally {
       // Clean up worktree
       if (worktreeInfo) {
@@ -370,27 +313,12 @@ export class ReviewOrchestrator {
         if (this.options.verbose) {
           console.log(`[Orchestrator] Removing worktree: ${worktreeInfo.worktreePath}`);
         }
-        this.sendStatus({
-          type: 'phase',
-          phase: 'Cleanup',
-          message: '正在清理 worktree...',
-        });
         try {
           removeWorktree(worktreeInfo);
           this.progress.success('Worktree 已清理');
         } catch (cleanupError) {
           console.error('[Orchestrator] Failed to clean up worktree:', cleanupError);
         }
-      }
-
-      // Stop status server after review
-      if (this.statusServer) {
-        if (this.options.monitorStopDelay > 0) {
-          await new Promise((resolve) =>
-            globalThis.setTimeout(resolve, this.options.monitorStopDelay)
-          );
-        }
-        await this.statusServer.stop();
       }
     }
   }
@@ -578,11 +506,6 @@ export class ReviewOrchestrator {
 
     // Step 2: Deduplicate all issues BEFORE validation (key optimization!)
     this.progress.progress('去重中...');
-    this.sendStatus({
-      type: 'phase',
-      phase: 'Deduplication',
-      message: `正在去重 ${allRawIssues.length} 个问题...`,
-    });
 
     const deduplicator = createDeduplicator({
       verbose: this.options.verbose,
@@ -613,16 +536,6 @@ export class ReviewOrchestrator {
         `[Orchestrator] Deduplication: ${allRawIssues.length} → ${uniqueIssues.length} unique issues (removed ${deduplicationResult.duplicateGroups.length} duplicate groups)`
       );
     }
-
-    this.sendStatus({
-      type: 'progress',
-      message: `去重完成: ${allRawIssues.length} → ${uniqueIssues.length} 个唯一问题`,
-      details: {
-        before: allRawIssues.length,
-        after: uniqueIssues.length,
-        removed: deduplicationResult.duplicateGroups.length,
-      },
-    });
 
     // Step 3: Filter out low-confidence issues using dynamic thresholds by severity
     // Critical issues have lower thresholds (0.2), suggestions have higher (0.7)
@@ -690,22 +603,12 @@ export class ReviewOrchestrator {
     this.progress.progress(
       `验证中: 0/${highConfidenceIssues.length} (跳过 ${lowConfidenceIssues.length} 个低置信度)`
     );
-    this.sendStatus({
-      type: 'phase',
-      phase: 'Validation',
-      message: `正在验证 ${highConfidenceIssues.length} 个高置信度问题 (跳过 ${lowConfidenceIssues.length} 个低置信度)...`,
-    });
 
     const validator = createValidator({
       repoPath: context.repoPath,
       verbose: this.options.verbose,
       onProgress: (current, total, issueId) => {
         this.progress.validation(current, total, issueId);
-        this.sendStatus({
-          type: 'progress',
-          message: `验证进度: ${current}/${total}`,
-          details: { current, total, issueId },
-        });
       },
     });
 
@@ -744,18 +647,6 @@ export class ReviewOrchestrator {
       );
     }
 
-    this.sendStatus({
-      type: 'progress',
-      message: `验证完成: ${validationResult.issues.length} 个问题已验证`,
-      details: {
-        total: validationResult.issues.length,
-        confirmed: validationResult.issues.filter((i) => i.validation_status === 'confirmed')
-          .length,
-        rejected: validationResult.issues.filter((i) => i.validation_status === 'rejected').length,
-        skipped_low_confidence: lowConfidenceIssues.length,
-      },
-    });
-
     // Combine validated issues with auto-rejected low-confidence issues
     return {
       validatedIssues: [...validationResult.issues, ...lowConfidenceIssues],
@@ -775,13 +666,6 @@ export class ReviewOrchestrator {
     if (this.options.verbose) {
       console.log(`[Orchestrator] Starting agent: ${agentType}`);
     }
-
-    this.sendStatus({
-      type: 'agent',
-      agent: agentType,
-      message: `${agentType} 开始分析...`,
-      details: { status: 'running' },
-    });
 
     // Build the prompt for this agent
     const userPrompt = buildSpecialistPrompt(agentType, {
@@ -919,36 +803,12 @@ export class ReviewOrchestrator {
       );
     }
 
-    this.sendStatus({
-      type: 'agent',
-      agent: agentType,
-      message: `${agentType} 完成，发现 ${parsed.issues.length} 个问题`,
-      details: { status: 'completed', issues: parsed.issues.length },
-    });
-
     return {
       agent: agentType,
       issues: parsed.issues,
       checklist: parsed.checklist,
       tokens_used: tokensUsed,
     };
-  }
-
-  /**
-   * Send status update to the monitor
-   */
-  private sendStatus(update: {
-    type: 'phase' | 'agent' | 'progress' | 'complete' | 'error';
-    phase?: string;
-    agent?: string;
-    message: string;
-    progress?: number;
-    total?: number;
-    details?: Record<string, unknown>;
-  }): void {
-    if (this.statusServer) {
-      this.statusServer.sendUpdate(update);
-    }
   }
 }
 

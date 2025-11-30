@@ -45,8 +45,6 @@ Options (review command):
   --skip-validation    Skip issue validation (faster but less accurate)
   --incremental        Enable incremental review (only review new commits)
   --reset-state        Reset review state and force full review
-  --monitor            Enable real-time status monitoring UI
-  --monitor-port=<num> Status monitor port (default: 3456)
   --verbose            Enable verbose output
 
 Config subcommands:
@@ -258,8 +256,6 @@ function parseOptions(args: string[]): {
   skipValidation: boolean;
   incremental: boolean;
   resetState: boolean;
-  monitor: boolean;
-  monitorPort: number;
   verbose: boolean;
 } {
   const options = {
@@ -271,8 +267,6 @@ function parseOptions(args: string[]): {
     skipValidation: false,
     incremental: false,
     resetState: false,
-    monitor: false,
-    monitorPort: 3456,
     verbose: false,
   };
 
@@ -313,13 +307,6 @@ function parseOptions(args: string[]): {
       options.incremental = true;
     } else if (arg === '--reset-state') {
       options.resetState = true;
-    } else if (arg === '--monitor') {
-      options.monitor = true;
-    } else if (arg.startsWith('--monitor-port=')) {
-      const port = parseInt(arg.split('=')[1] || '3456', 10);
-      if (!isNaN(port) && port > 0 && port < 65536) {
-        options.monitorPort = port;
-      }
     } else if (arg === '--verbose') {
       options.verbose = true;
     }
@@ -379,8 +366,6 @@ Format:        ${options.format}${modeInfo ? '\n' + modeInfo : ''}${configInfo ?
       skipValidation: options.skipValidation,
       incremental: options.incremental,
       resetState: options.resetState,
-      monitor: options.monitor,
-      monitorPort: options.monitorPort,
       rulesDirs: options.rulesDirs,
       customAgentsDirs: options.customAgentsDirs,
     },

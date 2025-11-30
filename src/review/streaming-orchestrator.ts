@@ -35,7 +35,6 @@ import {
 import { parseDiff, type DiffFile } from '../git/parser.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
-import { StatusServer } from '../monitor/status-server.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
@@ -71,9 +70,6 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
   skipValidation: false,
-  monitor: false,
-  monitorPort: 3456,
-  monitorStopDelay: 5000,
   showProgress: true,
   smartAgentSelection: true,
   disableSelectionLLM: false,
@@ -91,7 +87,6 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
  */
 export class StreamingReviewOrchestrator {
   private options: Required<OrchestratorOptions>;
-  private statusServer?: StatusServer;
   private streamingValidator?: StreamingValidator;
   private realtimeDeduplicator?: RealtimeDeduplicator;
   private progress: IProgressPrinter;
@@ -113,23 +108,12 @@ export class StreamingReviewOrchestrator {
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
 
-    // Start status server if monitoring is enabled
-    if (this.options.monitor) {
-      this.statusServer = new StatusServer(this.options.monitorPort);
-      await this.statusServer.start();
-    }
-
     try {
       // Phase 1: Build review context
       this.progress.phase(1, 4, '构建审查上下文...');
       if (this.options.verbose) {
         console.log('[StreamingOrchestrator] Building review context...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Context Building',
-        message: '正在构建审查上下文...',
-      });
 
       const { context, diffFiles } = await this.buildContext(input);
 
@@ -227,11 +211,6 @@ export class StreamingReviewOrchestrator {
         if (this.options.verbose) {
           console.log('[StreamingOrchestrator] Running smart agent selection...');
         }
-        this.sendStatus({
-          type: 'phase',
-          phase: 'Agent Selection',
-          message: '正在智能选择需要运行的 Agents...',
-        });
 
         selectionResult = await selectAgents(diffFiles, {
           verbose: this.options.verbose,
@@ -276,11 +255,6 @@ export class StreamingReviewOrchestrator {
           `[StreamingOrchestrator] Creating worktree for source branch: ${input.sourceBranch}`
         );
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Worktree',
-        message: `正在创建 worktree: ${input.sourceBranch}...`,
-      });
       worktreeInfo = createWorktreeForReview(input.repoPath, input.sourceBranch);
       this.progress.success(`Worktree 已创建: ${worktreeInfo.worktreePath}`);
       if (this.options.verbose) {
@@ -301,15 +275,6 @@ export class StreamingReviewOrchestrator {
           this.progress.info(
             `去重: "${newIssue.title}" 与 "${existingIssue.title}" 重复 (${reason})`
           );
-          this.sendStatus({
-            type: 'progress',
-            message: `问题去重: ${newIssue.title}`,
-            details: {
-              issue_id: newIssue.id,
-              duplicate_of: existingIssue.id,
-              reason,
-            },
-          });
         },
       });
 
@@ -326,16 +291,6 @@ export class StreamingReviewOrchestrator {
             callbacks: {
               onIssueDiscovered: (issue) => {
                 this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
-                this.sendStatus({
-                  type: 'progress',
-                  message: `发现问题: ${issue.title}`,
-                  details: {
-                    issue_id: issue.id,
-                    severity: issue.severity,
-                    file: issue.file,
-                    line: issue.line_start,
-                  },
-                });
               },
               onIssueValidated: (issue) => {
                 const reason =
@@ -343,15 +298,6 @@ export class StreamingReviewOrchestrator {
                     ? issue.rejection_reason || issue.grounding_evidence?.reasoning
                     : undefined;
                 this.progress.issueValidated(issue.title, issue.validation_status, reason);
-                this.sendStatus({
-                  type: 'progress',
-                  message: `验证完成: ${issue.title} (${issue.validation_status})`,
-                  details: {
-                    issue_id: issue.id,
-                    status: issue.validation_status,
-                    reason: reason,
-                  },
-                });
               },
               onAutoRejected: (issue, reason) => {
                 this.progress.autoRejected(issue.title, reason);
@@ -370,11 +316,6 @@ export class StreamingReviewOrchestrator {
       if (this.options.verbose) {
         console.log('[StreamingOrchestrator] Running specialist agents with streaming...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Agent Execution',
-        message: '正在运行专业审查 Agents...',
-      });
 
       const { checklists, tokens: agentTokens } = await this.runAgentsWithStreaming(
         context,
@@ -392,11 +333,6 @@ export class StreamingReviewOrchestrator {
             `[StreamingOrchestrator] Running ${triggeredCustomAgents.length} custom agents...`
           );
         }
-        this.sendStatus({
-          type: 'phase',
-          phase: 'Custom Agent Execution',
-          message: `正在运行 ${triggeredCustomAgents.length} 个自定义审查 Agents...`,
-        });
 
         // Show custom agents starting
         for (const agent of triggeredCustomAgents) {
@@ -418,13 +354,8 @@ export class StreamingReviewOrchestrator {
             standardsText: standardsToText(context.standards),
           },
           {
-            onAgentStart: (agent) => {
-              this.sendStatus({
-                type: 'agent',
-                agent: agent.name,
-                message: `${agent.name} 开始分析...`,
-                details: { status: 'running', isCustom: true },
-              });
+            onAgentStart: () => {
+              // No-op: progress is handled elsewhere
             },
             onAgentComplete: (agent, result) => {
               const elapsed = result.execution_time_ms;
@@ -435,38 +366,11 @@ export class StreamingReviewOrchestrator {
                 'completed',
                 `${result.issues.length} issues, ${elapsedStr}`
               );
-              this.sendStatus({
-                type: 'agent',
-                agent: agent.name,
-                message: `${agent.name} 完成`,
-                details: { status: 'completed', issues: result.issues.length, isCustom: true },
-              });
             },
             onAgentError: (agent, error) => {
               this.progress.agent(agent.name, 'error', error.message);
-              this.sendStatus({
-                type: 'agent',
-                agent: agent.name,
-                message: `${agent.name} 失败: ${error.message}`,
-                details: { status: 'error', isCustom: true },
-              });
             },
             onIssueDiscovered: (issue) => {
-              // Note: Don't call this.progress.issueDiscovered() here
-              // because enqueue() will trigger the callback which already calls it.
-              // Only send status update for the web monitor.
-              this.sendStatus({
-                type: 'progress',
-                message: `发现问题: ${issue.title}`,
-                details: {
-                  issue_id: issue.id,
-                  severity: issue.severity,
-                  file: issue.file,
-                  line: issue.line_start,
-                  isCustom: true,
-                },
-              });
-
               // Enqueue custom agent issues for validation
               // This will trigger the streaming validator's onIssueDiscovered callback
               // which handles CLI progress output
@@ -501,11 +405,6 @@ export class StreamingReviewOrchestrator {
       if (this.options.verbose) {
         console.log('[StreamingOrchestrator] Waiting for validations to complete...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Validation',
-        message: '等待验证完成...',
-      });
 
       // Flush streaming validator and get results
       let validatedIssues: ValidatedIssue[] = [];
@@ -576,21 +475,10 @@ export class StreamingReviewOrchestrator {
       if (this.options.verbose) {
         console.log('[StreamingOrchestrator] Aggregating results...');
       }
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Aggregation',
-        message: '正在聚合结果...',
-      });
 
       const aggregationResult = aggregate(validatedIssues, checklists);
       const aggregatedIssues = aggregationResult.issues;
       const aggregatedChecklist = aggregationResult.checklist;
-
-      this.sendStatus({
-        type: 'phase',
-        phase: 'Report Generation',
-        message: '正在生成报告...',
-      });
 
       const metrics = calculateMetrics(
         validatedIssues.map((i) => ({
@@ -631,23 +519,7 @@ export class StreamingReviewOrchestrator {
 
       this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
 
-      this.sendStatus({
-        type: 'complete',
-        message: `审查完成! 发现 ${aggregatedIssues.length} 个问题`,
-        details: {
-          issues: aggregatedIssues.length,
-          time_ms: report.metadata.review_time_ms,
-          tokens_used: tokensUsed,
-        },
-      });
-
       return report;
-    } catch (error) {
-      this.sendStatus({
-        type: 'error',
-        message: `审查失败: ${error instanceof Error ? error.message : String(error)}`,
-      });
-      throw error;
     } finally {
       // Clean up worktree
       if (worktreeInfo) {
@@ -655,26 +527,12 @@ export class StreamingReviewOrchestrator {
         if (this.options.verbose) {
           console.log(`[StreamingOrchestrator] Removing worktree: ${worktreeInfo.worktreePath}`);
         }
-        this.sendStatus({
-          type: 'phase',
-          phase: 'Cleanup',
-          message: '正在清理 worktree...',
-        });
         try {
           removeWorktree(worktreeInfo);
           this.progress.success('Worktree 已清理');
         } catch (cleanupError) {
           console.error('[StreamingOrchestrator] Failed to clean up worktree:', cleanupError);
         }
-      }
-
-      if (this.statusServer) {
-        if (this.options.monitorStopDelay > 0) {
-          await new Promise((resolve) =>
-            globalThis.setTimeout(resolve, this.options.monitorStopDelay)
-          );
-        }
-        await this.statusServer.stop();
       }
     }
   }
@@ -928,13 +786,6 @@ Write all text (title, description, suggestion) in Chinese.`,
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
     }
 
-    this.sendStatus({
-      type: 'agent',
-      agent: agentType,
-      message: `${agentType} 开始分析...`,
-      details: { status: 'running' },
-    });
-
     // Get project-specific rules for this agent
     const projectRules =
       agentType !== 'validator'
@@ -1001,35 +852,11 @@ Write all text (title, description, suggestion) in Chinese.`,
       console.log(`[StreamingOrchestrator] Agent ${agentType} completed`);
     }
 
-    this.sendStatus({
-      type: 'agent',
-      agent: agentType,
-      message: `${agentType} 完成`,
-      details: { status: 'completed' },
-    });
-
     // TODO: Parse checklist from agent output if needed
     return {
       tokensUsed,
       checklists: [],
     };
-  }
-
-  /**
-   * Send status update to the monitor
-   */
-  private sendStatus(update: {
-    type: 'phase' | 'agent' | 'progress' | 'complete' | 'error';
-    phase?: string;
-    agent?: string;
-    message: string;
-    progress?: number;
-    total?: number;
-    details?: Record<string, unknown>;
-  }): void {
-    if (this.statusServer) {
-      this.statusServer.sendUpdate(update);
-    }
   }
 }
 
