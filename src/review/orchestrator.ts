@@ -60,7 +60,9 @@ import {
 /**
  * Default orchestrator options
  */
-const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<OrchestratorOptions, 'onEvent'>> & {
+  onEvent?: OrchestratorOptions['onEvent'];
+} = {
   maxConcurrency: 4,
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
@@ -73,6 +75,8 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   disableCustomAgentLLM: false,
   incremental: false,
   resetState: false,
+  progressMode: 'auto',
+  onEvent: undefined,
 };
 
 /**
@@ -81,7 +85,7 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
  * Coordinates multiple specialized agents to perform comprehensive code review.
  */
 export class ReviewOrchestrator {
-  private options: Required<OrchestratorOptions>;
+  private options: typeof DEFAULT_OPTIONS;
   private progress: IProgressPrinter;
   private stateManager?: ReviewStateManager;
   private incrementalInfo?: IncrementalCheckResult;

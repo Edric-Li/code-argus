@@ -409,6 +409,28 @@ export interface OrchestratorOptions {
    * Forces a full review and clears the previous state
    */
   resetState?: boolean;
+  /**
+   * Progress output mode (default: 'auto')
+   * - 'auto': TTY mode (spinner, colors) if TTY, silent otherwise
+   * - 'tty': Force TTY mode (spinner, colors)
+   * - 'json': Output JSON lines (NDJSON) to stderr for service integration
+   * - 'silent': No progress output
+   */
+  progressMode?: 'auto' | 'tty' | 'json' | 'silent';
+  /**
+   * Custom event handler for review events
+   * Called for each event in addition to normal progress output
+   */
+  onEvent?: (event: ReviewProgressEvent) => void;
+}
+
+/**
+ * Review progress event (for service integration)
+ */
+export interface ReviewProgressEvent {
+  type: string;
+  data: Record<string, unknown>;
+  timestamp: string;
 }
 
 /**

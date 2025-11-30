@@ -39,11 +39,8 @@ import { createStreamingValidator, type StreamingValidator } from './streaming-v
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
 import { DEFAULT_AGENT_MODEL } from './constants.js';
-import {
-  createProgressPrinter,
-  nullProgressPrinter,
-  type IProgressPrinter,
-} from '../cli/progress.js';
+import { createProgressPrinterWithMode, type IProgressPrinter } from '../cli/index.js';
+import type { ReviewEvent, ReviewStateSnapshot, ReviewEventEmitter } from '../cli/events.js';
 import {
   loadRules,
   getRulesForAgent,
@@ -65,7 +62,9 @@ import { createRealtimeDeduplicator, type RealtimeDeduplicator } from './realtim
 /**
  * Default orchestrator options
  */
-const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
+const DEFAULT_OPTIONS: Required<Omit<OrchestratorOptions, 'onEvent'>> & {
+  onEvent?: OrchestratorOptions['onEvent'];
+} = {
   maxConcurrency: 4,
   verbose: false,
   agents: ['security-reviewer', 'logic-reviewer', 'style-reviewer', 'performance-reviewer'],
@@ -78,7 +77,17 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
   disableCustomAgentLLM: false,
   incremental: false,
   resetState: false,
+  progressMode: 'auto',
+  onEvent: undefined,
 };
+
+/**
+ * Extended progress printer interface with state access
+ */
+interface ExtendedProgressPrinter extends IProgressPrinter {
+  getState?: () => ReviewStateSnapshot;
+  getEmitter?: () => ReviewEventEmitter;
+}
 
 /**
  * Streaming Review Orchestrator
@@ -86,10 +95,10 @@ const DEFAULT_OPTIONS: Required<OrchestratorOptions> = {
  * Uses MCP tools for real-time issue reporting with immediate deduplication and validation.
  */
 export class StreamingReviewOrchestrator {
-  private options: Required<OrchestratorOptions>;
+  private options: typeof DEFAULT_OPTIONS;
   private streamingValidator?: StreamingValidator;
   private realtimeDeduplicator?: RealtimeDeduplicator;
-  private progress: IProgressPrinter;
+  private progress: ExtendedProgressPrinter;
   private rulesConfig: RulesConfig = EMPTY_RULES_CONFIG;
   private autoRejectedIssues: ValidatedIssue[] = [];
   private rawIssuesForSkipMode: RawIssue[] = [];
@@ -97,7 +106,29 @@ export class StreamingReviewOrchestrator {
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
-    this.progress = this.options.showProgress ? createProgressPrinter() : nullProgressPrinter;
+
+    // Create progress printer based on mode
+    this.progress = createProgressPrinterWithMode({
+      mode: this.options.progressMode,
+      verbose: this.options.verbose,
+      onEvent: this.options.onEvent as ((event: ReviewEvent) => void) | undefined,
+    });
+  }
+
+  /**
+   * Get current review state snapshot (for service integration)
+   * Returns undefined if progress mode doesn't support state tracking
+   */
+  getState(): ReviewStateSnapshot | undefined {
+    return this.progress.getState?.();
+  }
+
+  /**
+   * Get the event emitter for direct event subscription
+   * Returns undefined if progress mode doesn't support events
+   */
+  getEmitter(): ReviewEventEmitter | undefined {
+    return this.progress.getEmitter?.();
   }
 
   /**

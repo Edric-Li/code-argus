@@ -54,7 +54,26 @@ export type {
   // Orchestrator types
   OrchestratorOptions,
   OrchestratorInput,
+  // Progress event type
+  ReviewProgressEvent,
 } from './types.js';
+
+// CLI Events (for service integration)
+export {
+  ReviewEventEmitter,
+  createReviewEventEmitter,
+  type ReviewEvent,
+  type ReviewEventHandler,
+  type ReviewStateSnapshot,
+  type AgentState,
+} from '../cli/events.js';
+
+// CLI Progress Printers
+export {
+  createProgressPrinterWithMode,
+  type CreateProgressPrinterOptions,
+  type ProgressMode,
+} from '../cli/index.js';
 
 // Validation strategies
 export { DEFAULT_VALIDATION_STRATEGIES } from './types.js';

@@ -37,7 +37,8 @@ Arguments (for analyze/review):
   target        Target branch name (will use origin/<target>)
 
 Options (review command):
-  --format=<format>    Output format: json | markdown (default) | summary | pr-comments
+  --json-logs          Output as JSON event stream (for service integration)
+                       All progress and final report are output as JSON lines
   --language=<lang>    Output language: zh (default) | en
   --config-dir=<path>  Config directory (auto-loads rules/ and agents/)
   --rules-dir=<path>   Custom review rules directory
@@ -63,7 +64,8 @@ Examples:
   argus config set api-key sk-ant-xxx
   argus config set base-url https://my-proxy.com/v1
   argus config list
-  argus review /path/to/repo feature-branch main --format=markdown
+  argus review /path/to/repo feature-branch main
+  argus review /path/to/repo feature-branch main --json-logs
 `);
 }
 
@@ -248,7 +250,6 @@ function maskApiKey(key: string): string {
  * Parse CLI options from arguments
  */
 function parseOptions(args: string[]): {
-  format: 'json' | 'markdown' | 'summary' | 'pr-comments';
   language: 'en' | 'zh';
   configDirs: string[];
   rulesDirs: string[];
@@ -256,10 +257,10 @@ function parseOptions(args: string[]): {
   skipValidation: boolean;
   incremental: boolean;
   resetState: boolean;
+  jsonLogs: boolean;
   verbose: boolean;
 } {
   const options = {
-    format: 'markdown' as 'json' | 'markdown' | 'summary' | 'pr-comments',
     language: 'zh' as 'en' | 'zh',
     configDirs: [] as string[],
     rulesDirs: [] as string[],
@@ -267,21 +268,12 @@ function parseOptions(args: string[]): {
     skipValidation: false,
     incremental: false,
     resetState: false,
+    jsonLogs: false,
     verbose: false,
   };
 
   for (const arg of args) {
-    if (arg.startsWith('--format=')) {
-      const format = arg.split('=')[1];
-      if (
-        format === 'json' ||
-        format === 'markdown' ||
-        format === 'summary' ||
-        format === 'pr-comments'
-      ) {
-        options.format = format;
-      }
-    } else if (arg.startsWith('--language=')) {
+    if (arg.startsWith('--language=')) {
       const language = arg.split('=')[1];
       if (language === 'en' || language === 'zh') {
         options.language = language;
@@ -307,6 +299,8 @@ function parseOptions(args: string[]): {
       options.incremental = true;
     } else if (arg === '--reset-state') {
       options.resetState = true;
+    } else if (arg === '--json-logs') {
+      options.jsonLogs = true;
     } else if (arg === '--verbose') {
       options.verbose = true;
     }
@@ -337,25 +331,27 @@ async function runReviewCommand(
   targetBranch: string,
   options: ReturnType<typeof parseOptions>
 ): Promise<void> {
-  const configInfo =
-    options.configDirs.length > 0 ? `Config:        ${options.configDirs.join(', ')}` : '';
-  const rulesInfo =
-    options.rulesDirs.length > 0 ? `Rules:         ${options.rulesDirs.join(', ')}` : '';
-  const agentsInfo =
-    options.customAgentsDirs.length > 0
-      ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
-      : '';
-  const modeInfo = options.incremental ? 'Mode:          Incremental' : '';
+  // In JSON logs mode, skip the banner - all output is JSON events
+  if (!options.jsonLogs) {
+    const configInfo =
+      options.configDirs.length > 0 ? `Config:        ${options.configDirs.join(', ')}` : '';
+    const rulesInfo =
+      options.rulesDirs.length > 0 ? `Rules:         ${options.rulesDirs.join(', ')}` : '';
+    const agentsInfo =
+      options.customAgentsDirs.length > 0
+        ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
+        : '';
+    const modeInfo = options.incremental ? 'Mode:          Incremental' : '';
 
-  console.log(`
+    console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch}
-Target Branch: ${targetBranch}
-Format:        ${options.format}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
+Target Branch: ${targetBranch}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
+  }
 
   const report = await review({
     repoPath,
@@ -368,15 +364,29 @@ Format:        ${options.format}${modeInfo ? '\n' + modeInfo : ''}${configInfo ?
       resetState: options.resetState,
       rulesDirs: options.rulesDirs,
       customAgentsDirs: options.customAgentsDirs,
+      // Use JSON logs mode if specified, otherwise auto-detect
+      progressMode: options.jsonLogs ? 'json' : 'auto',
     },
   });
 
-  // Output formatted report
-  const formatted = formatReport(report, {
-    format: options.format,
-    language: options.language,
-  });
-  console.log(formatted);
+  if (options.jsonLogs) {
+    // In JSON logs mode, output the report as a JSON event to stderr
+    const reportEvent = {
+      type: 'report',
+      data: {
+        report,
+        timestamp: new Date().toISOString(),
+      },
+    };
+    process.stderr.write(JSON.stringify(reportEvent) + '\n');
+  } else {
+    // In normal mode, output formatted markdown report
+    const formatted = formatReport(report, {
+      format: 'markdown',
+      language: options.language,
+    });
+    console.log(formatted);
+  }
 }
 
 /**

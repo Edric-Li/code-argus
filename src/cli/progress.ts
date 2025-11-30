@@ -59,6 +59,9 @@ export interface IProgressPrinter {
     tokensUsed: number;
     timeMs: number;
   }): void;
+
+  // Report output (for json-logs mode)
+  report?(report: Record<string, unknown>): void;
 }
 
 /**
@@ -420,6 +423,23 @@ export class ProgressPrinter implements IProgressPrinter {
  */
 export function createProgressPrinter(options?: ProgressPrinterOptions): ProgressPrinter {
   return new ProgressPrinter(options);
+}
+
+/**
+ * Progress mode for createProgressPrinterWithMode
+ */
+export type ProgressMode = 'auto' | 'tty' | 'json' | 'silent';
+
+/**
+ * Extended options for mode-based progress printer creation
+ */
+export interface ProgressPrinterWithModeOptions {
+  /** Progress output mode */
+  mode?: ProgressMode;
+  /** Verbose output (for json mode, includes debug events) */
+  verbose?: boolean;
+  /** Custom event handler (for json mode) */
+  onEvent?: (event: unknown) => void;
 }
 
 /**
