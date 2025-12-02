@@ -3,7 +3,17 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  readFileSync,
+  lstatSync,
+  readlinkSync,
+  openSync,
+  readSync,
+  closeSync,
+} from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { DiffOptions, DiffResult } from './type.js';
@@ -404,10 +414,148 @@ export interface LocalDiffResult {
 }
 
 /**
- * Get local diff (all uncommitted changes)
+ * Check if a file is likely binary by looking for null bytes
+ */
+function isBinaryFile(filePath: string): boolean {
+  let fd: number | undefined;
+  try {
+    const buffer = Buffer.alloc(8000);
+    fd = openSync(filePath, 'r');
+    const bytesRead = readSync(fd, buffer, 0, 8000, 0);
+
+    // Check for null bytes (common in binary files)
+    for (let i = 0; i < bytesRead; i++) {
+      if (buffer[i] === 0) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return true; // Assume binary if can't read
+  } finally {
+    // Ensure file descriptor is always closed
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Ignore close errors
+      }
+    }
+  }
+}
+
+/**
+ * Generate diff format for a new untracked file
+ *
+ * Handles:
+ * - Path traversal validation (Issue 2)
+ * - Correct line count for files with/without trailing newline (Issue 3)
+ * - Symlinks (Issue 6)
+ * - Debug logging for errors (Issue 7)
+ */
+function generateUntrackedFileDiff(filePath: string, repoPath: string): string {
+  const fullPath = join(repoPath, filePath);
+
+  // Issue 2: Validate that the file path doesn't escape the repository
+  const normalizedFullPath = resolve(fullPath);
+  const normalizedRepoPath = resolve(repoPath);
+  if (!normalizedFullPath.startsWith(normalizedRepoPath + '/')) {
+    if (process.env.DEBUG) {
+      console.debug(`[git/diff] Skipping file outside repository: ${filePath}`);
+    }
+    return '';
+  }
+
+  try {
+    // Issue 6: Use lstatSync to not follow symlinks
+    const stat = lstatSync(fullPath);
+
+    // Skip directories
+    if (stat.isDirectory()) {
+      return '';
+    }
+
+    // Issue 6: Handle symlinks specially
+    if (stat.isSymbolicLink()) {
+      const target = readlinkSync(fullPath);
+      return `diff --git a/${filePath} b/${filePath}
+new file mode 120000
+--- /dev/null
++++ b/${filePath}
+@@ -0,0 +1 @@
++${target}
+\\ No newline at end of file
+`;
+    }
+
+    // Skip large files (> 1MB)
+    if (stat.size > 1024 * 1024) {
+      return `diff --git a/${filePath} b/${filePath}
+new file mode 100644
+--- /dev/null
++++ b/${filePath}
+@@ -0,0 +1 @@
++[File too large to display: ${stat.size} bytes]
+`;
+    }
+
+    // Skip binary files
+    if (isBinaryFile(fullPath)) {
+      return `diff --git a/${filePath} b/${filePath}
+new file mode 100644
+Binary files /dev/null and b/${filePath} differ
+`;
+    }
+
+    // Read file content
+    const content = readFileSync(fullPath, 'utf-8');
+
+    // Issue 3: Handle trailing newline correctly
+    let lines = content.split('\n');
+    const hasTrailingNewline = content.endsWith('\n') && lines.length > 0;
+    if (hasTrailingNewline && lines[lines.length - 1] === '') {
+      lines = lines.slice(0, -1);
+    }
+
+    // Handle empty files
+    if (lines.length === 0 || (lines.length === 1 && lines[0] === '')) {
+      return `diff --git a/${filePath} b/${filePath}
+new file mode 100644
+--- /dev/null
++++ b/${filePath}
+`;
+    }
+
+    // Issue 5: Use array and join instead of string concatenation in loop
+    const diffLines = lines.map((line) => `+${line}`);
+    const diff = `diff --git a/${filePath} b/${filePath}
+new file mode 100644
+--- /dev/null
++++ b/${filePath}
+@@ -0,0 +1,${lines.length} @@
+${diffLines.join('\n')}
+`;
+
+    return diff;
+  } catch (error) {
+    // Issue 7: Log at debug level for troubleshooting
+    if (process.env.DEBUG) {
+      console.debug(
+        `[git/diff] Skipping untracked file ${filePath}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    return '';
+  }
+}
+
+/** Maximum number of untracked files to process (Issue 4: performance protection) */
+const MAX_UNTRACKED_FILES = 100;
+
+/**
+ * Get local diff (all uncommitted changes including untracked files)
  *
  * Uses `git diff HEAD` to get all local changes (both staged and unstaged)
- * relative to the last commit.
+ * relative to the last commit, plus generates diff for untracked files.
  *
  * @param repoPath - Path to the git repository (defaults to current directory)
  * @returns Local diff result
@@ -416,16 +564,49 @@ export interface LocalDiffResult {
 export function getLocalDiff(repoPath: string = process.cwd()): LocalDiffResult {
   const absolutePath = validateGitRepository(repoPath);
 
-  // Execute diff: git diff HEAD (all local changes)
   try {
-    const diff = execSync('git diff HEAD', {
+    // Step 1: Get diff for tracked files (staged + unstaged)
+    const trackedDiff = execSync('git diff HEAD', {
       cwd: absolutePath,
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
     });
 
+    // Step 2: Get list of untracked files (excluding ignored files)
+    const allUntrackedFiles = execSync('git ls-files --others --exclude-standard', {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+    })
+      .trim()
+      .split('\n')
+      .filter((f) => f.length > 0);
+
+    // Issue 4: Limit the number of untracked files to process for performance
+    const filesToProcess = allUntrackedFiles.slice(0, MAX_UNTRACKED_FILES);
+    const skippedCount = allUntrackedFiles.length - filesToProcess.length;
+
+    // Issue 5: Use array and join instead of string concatenation in loop
+    const untrackedDiffs: string[] = [];
+    for (const file of filesToProcess) {
+      const fileDiff = generateUntrackedFileDiff(file, absolutePath);
+      if (fileDiff) {
+        untrackedDiffs.push(fileDiff);
+      }
+    }
+
+    // Add warning if files were skipped
+    if (skippedCount > 0) {
+      untrackedDiffs.push(
+        `# Warning: ${skippedCount} additional untracked files not shown (limit: ${MAX_UNTRACKED_FILES})\n`
+      );
+    }
+
+    // Combine both diffs
+    const combinedDiff = trackedDiff + untrackedDiffs.join('');
+
     return {
-      diff,
+      diff: combinedDiff,
       repoPath: absolutePath,
       stagedOnly: false,
     };
