@@ -73,6 +73,8 @@ export interface DiffFile {
   hunks?: DiffHunk[];
   /** Lines that only changed in whitespace (line numbers in new file) */
   whitespaceOnlyLines?: number[];
+  /** All changed lines (line numbers in new file) - lines with '+' prefix in diff */
+  changedLines?: number[];
 }
 
 /**
@@ -143,11 +145,13 @@ function parseFileDiff(chunk: string): DiffFile | null {
   // For source files, parse hunks and detect whitespace-only changes
   let hunks: DiffHunk[] | undefined;
   let whitespaceOnlyLines: number[] | undefined;
+  let changedLines: number[] | undefined;
 
   if (category === 'source' || category === 'config') {
     hunks = parseHunks(chunk);
     if (hunks.length > 0) {
       whitespaceOnlyLines = detectWhitespaceOnlyChanges(hunks);
+      changedLines = getChangedLineNumbers(hunks);
     }
   }
 
@@ -158,6 +162,7 @@ function parseFileDiff(chunk: string): DiffFile | null {
     category,
     hunks,
     whitespaceOnlyLines,
+    changedLines,
   };
 }
 
@@ -444,4 +449,29 @@ export function detectWhitespaceOnlyChanges(hunks: DiffHunk[]): number[] {
   }
 
   return whitespaceOnlyLines.sort((a, b) => a - b);
+}
+
+/**
+ * Extract all changed line numbers from hunks
+ *
+ * These are lines with '+' prefix in the diff, representing:
+ * - Newly added lines
+ * - Modified lines (the new version)
+ * - Whitespace-only changes (also included)
+ *
+ * @param hunks - Parsed diff hunks
+ * @returns Array of line numbers (in new file) that were changed
+ */
+export function getChangedLineNumbers(hunks: DiffHunk[]): number[] {
+  const changedLines: number[] = [];
+
+  for (const hunk of hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === 'added' && line.newLineNumber !== undefined) {
+        changedLines.push(line.newLineNumber);
+      }
+    }
+  }
+
+  return changedLines.sort((a, b) => a - b);
 }

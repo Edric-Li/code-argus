@@ -822,15 +822,26 @@ export class ReviewOrchestrator {
       console.log(`[Orchestrator] Starting agent: ${agentType}`);
     }
 
-    // Extract whitespace-only changes for post-filtering (style-reviewer only)
+    // Extract line change info for post-filtering (style-reviewer only)
     let whitespaceOnlyChanges: Array<{ path: string; lines: number[] }> | undefined;
+    let changedLinesByFile: Map<string, Set<number>> | undefined;
+
     if (agentType === 'style-reviewer' && context.diffFiles) {
+      // Whitespace-only changes
       whitespaceOnlyChanges = context.diffFiles
         .filter((f) => f.whitespaceOnlyLines && f.whitespaceOnlyLines.length > 0)
         .map((f) => ({
           path: f.path,
           lines: f.whitespaceOnlyLines!,
         }));
+
+      // All changed lines (for filtering issues on unchanged context lines)
+      changedLinesByFile = new Map();
+      for (const file of context.diffFiles) {
+        if (file.changedLines && file.changedLines.length > 0) {
+          changedLinesByFile.set(file.path, new Set(file.changedLines));
+        }
+      }
     }
 
     // Build the prompt for this agent
@@ -916,14 +927,17 @@ export class ReviewOrchestrator {
               checklist?: ChecklistItem[];
             };
 
-            // Apply whitespace-only filter to structured output as well
+            // Apply style-reviewer filters to structured output
             let issues = parsed.issues || [];
-            if (
-              agentType === 'style-reviewer' &&
-              whitespaceOnlyChanges &&
-              whitespaceOnlyChanges.length > 0
-            ) {
-              issues = this.applyWhitespaceOnlyFilter(issues, whitespaceOnlyChanges);
+            if (agentType === 'style-reviewer') {
+              // Filter 1: Remove issues on unchanged context lines (broad filter)
+              if (changedLinesByFile && changedLinesByFile.size > 0) {
+                issues = this.applyChangedLinesFilter(issues, changedLinesByFile);
+              }
+              // Filter 2: Remove issues on whitespace-only change lines (fine-grained filter)
+              if (whitespaceOnlyChanges && whitespaceOnlyChanges.length > 0) {
+                issues = this.applyWhitespaceOnlyFilter(issues, whitespaceOnlyChanges);
+              }
             }
 
             return {
@@ -974,14 +988,17 @@ export class ReviewOrchestrator {
     // Parse the text result if no structured output
     const parsed = parseAgentResponse(resultText);
 
-    // Post-filter: reduce confidence for style issues on whitespace-only lines
+    // Post-filter for style-reviewer
     let filteredIssues = parsed.issues;
-    if (
-      agentType === 'style-reviewer' &&
-      whitespaceOnlyChanges &&
-      whitespaceOnlyChanges.length > 0
-    ) {
-      filteredIssues = this.applyWhitespaceOnlyFilter(parsed.issues, whitespaceOnlyChanges);
+    if (agentType === 'style-reviewer') {
+      // Filter 1: Remove issues on unchanged context lines (broad filter)
+      if (changedLinesByFile && changedLinesByFile.size > 0) {
+        filteredIssues = this.applyChangedLinesFilter(filteredIssues, changedLinesByFile);
+      }
+      // Filter 2: Remove issues on whitespace-only change lines (fine-grained filter)
+      if (whitespaceOnlyChanges && whitespaceOnlyChanges.length > 0) {
+        filteredIssues = this.applyWhitespaceOnlyFilter(filteredIssues, whitespaceOnlyChanges);
+      }
     }
 
     if (this.options.verbose) {
@@ -1047,6 +1064,70 @@ export class ReviewOrchestrator {
 
     if (filteredCount > 0) {
       this.progress.info(`过滤了 ${filteredCount} 个仅空白变更行上的已存在 style 问题`);
+    }
+
+    return filtered;
+  }
+
+  /**
+   * Filter out style issues on unchanged context lines
+   *
+   * This filter ensures we only report issues on lines that were actually changed.
+   * Lines that appear in diff only as context (no +/- prefix) should not be reported.
+   *
+   * Logic: issue's line range [line_start, line_end] must have at least one changed line
+   */
+  private applyChangedLinesFilter(
+    issues: RawIssue[],
+    changedLinesByFile: Map<string, Set<number>>
+  ): RawIssue[] {
+    let filteredCount = 0;
+
+    const filtered = issues.filter((issue) => {
+      // Only filter style category issues
+      if (issue.category !== 'style') {
+        return true; // Keep non-style issues
+      }
+
+      const changedLines = changedLinesByFile.get(issue.file);
+      if (!changedLines || changedLines.size === 0) {
+        // No changed lines in this file - filter out
+        filteredCount++;
+        if (this.options.verbose) {
+          console.log(
+            `[Orchestrator] Filtered style issue "${issue.id}" - file has no changed lines: ${issue.title}`
+          );
+        }
+        return false;
+      }
+
+      // Check if issue's line range overlaps with any changed line
+      const lineStart = issue.line_start;
+      const lineEnd = issue.line_end ?? issue.line_start;
+
+      let hasOverlap = false;
+      for (let line = lineStart; line <= lineEnd; line++) {
+        if (changedLines.has(line)) {
+          hasOverlap = true;
+          break;
+        }
+      }
+
+      if (!hasOverlap) {
+        filteredCount++;
+        if (this.options.verbose) {
+          console.log(
+            `[Orchestrator] Filtered style issue "${issue.id}" on unchanged line ${lineStart}: ${issue.title}`
+          );
+        }
+        return false;
+      }
+
+      return true; // Keep the issue
+    });
+
+    if (filteredCount > 0) {
+      this.progress.info(`过滤了 ${filteredCount} 个未变更行上的 style 问题`);
     }
 
     return filtered;

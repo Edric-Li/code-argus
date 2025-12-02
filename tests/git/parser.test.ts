@@ -2,9 +2,57 @@ import { describe, it, expect } from 'vitest';
 import {
   parseHunks,
   detectWhitespaceOnlyChanges,
+  getChangedLineNumbers,
   type DiffHunk,
   type HunkLine,
 } from '../../src/git/parser.js';
+
+// ============================================================================
+// Shared test helpers
+// ============================================================================
+
+/**
+ * Helper to create a hunk with specific lines for testing
+ */
+function createHunk(
+  lines: Array<{ type: 'context' | 'added' | 'removed'; content: string }>,
+  startLine = 1
+): DiffHunk {
+  const hunkLines: HunkLine[] = [];
+  let oldLine = startLine;
+  let newLine = startLine;
+
+  for (const line of lines) {
+    if (line.type === 'context') {
+      hunkLines.push({
+        type: 'context',
+        content: line.content,
+        oldLineNumber: oldLine++,
+        newLineNumber: newLine++,
+      });
+    } else if (line.type === 'removed') {
+      hunkLines.push({
+        type: 'removed',
+        content: line.content,
+        oldLineNumber: oldLine++,
+      });
+    } else if (line.type === 'added') {
+      hunkLines.push({
+        type: 'added',
+        content: line.content,
+        newLineNumber: newLine++,
+      });
+    }
+  }
+
+  return {
+    oldStart: startLine,
+    oldCount: hunkLines.filter((l) => l.type !== 'added').length,
+    newStart: startLine,
+    newCount: hunkLines.filter((l) => l.type !== 'removed').length,
+    lines: hunkLines,
+  };
+}
 
 // ============================================================================
 // parseHunks tests
@@ -122,47 +170,6 @@ Binary files differ`;
 // ============================================================================
 
 describe('detectWhitespaceOnlyChanges', () => {
-  // Helper to create a hunk with specific lines
-  function createHunk(
-    lines: Array<{ type: 'context' | 'added' | 'removed'; content: string }>,
-    startLine = 1
-  ): DiffHunk {
-    const hunkLines: HunkLine[] = [];
-    let oldLine = startLine;
-    let newLine = startLine;
-
-    for (const line of lines) {
-      if (line.type === 'context') {
-        hunkLines.push({
-          type: 'context',
-          content: line.content,
-          oldLineNumber: oldLine++,
-          newLineNumber: newLine++,
-        });
-      } else if (line.type === 'removed') {
-        hunkLines.push({
-          type: 'removed',
-          content: line.content,
-          oldLineNumber: oldLine++,
-        });
-      } else if (line.type === 'added') {
-        hunkLines.push({
-          type: 'added',
-          content: line.content,
-          newLineNumber: newLine++,
-        });
-      }
-    }
-
-    return {
-      oldStart: startLine,
-      oldCount: hunkLines.filter((l) => l.type !== 'added').length,
-      newStart: startLine,
-      newCount: hunkLines.filter((l) => l.type !== 'removed').length,
-      lines: hunkLines,
-    };
-  }
-
   describe('indentation changes', () => {
     it('should detect spaces-to-more-spaces indentation change', () => {
       const hunk = createHunk([
@@ -474,5 +481,91 @@ describe('detectWhitespaceOnlyChanges', () => {
       // Second line is whitespace-only
       expect(result).toContain(3);
     });
+  });
+});
+
+// ============================================================================
+// getChangedLineNumbers tests
+// ============================================================================
+
+describe('getChangedLineNumbers', () => {
+  it('should return empty array for empty hunks', () => {
+    const result = getChangedLineNumbers([]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should return empty array for hunk with only context lines', () => {
+    const hunk = createHunk([
+      { type: 'context', content: 'line 1' },
+      { type: 'context', content: 'line 2' },
+    ]);
+
+    const result = getChangedLineNumbers([hunk]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should return empty array for hunk with only removed lines', () => {
+    const hunk = createHunk([
+      { type: 'removed', content: 'deleted line 1' },
+      { type: 'removed', content: 'deleted line 2' },
+    ]);
+
+    const result = getChangedLineNumbers([hunk]);
+    expect(result).toHaveLength(0);
+  });
+
+  it('should return changed line numbers (added lines)', () => {
+    const hunk = createHunk([
+      { type: 'context', content: 'context' },
+      { type: 'added', content: 'new line 1' },
+      { type: 'added', content: 'new line 2' },
+      { type: 'context', content: 'context' },
+    ]);
+
+    const result = getChangedLineNumbers([hunk]);
+    expect(result).toHaveLength(2);
+    expect(result).toContain(2);
+    expect(result).toContain(3);
+  });
+
+  it('should return changed line numbers (modified lines)', () => {
+    const hunk = createHunk([
+      { type: 'removed', content: 'old line' },
+      { type: 'added', content: 'new line' },
+    ]);
+
+    const result = getChangedLineNumbers([hunk]);
+    expect(result).toHaveLength(1);
+    expect(result).toContain(1);
+  });
+
+  it('should collect changed lines from multiple hunks', () => {
+    const hunk1 = createHunk(
+      [
+        { type: 'context', content: 'context' },
+        { type: 'added', content: 'added in hunk 1' },
+      ],
+      1
+    );
+    const hunk2 = createHunk(
+      [
+        { type: 'context', content: 'context' },
+        { type: 'added', content: 'added in hunk 2' },
+      ],
+      10
+    );
+
+    const result = getChangedLineNumbers([hunk1, hunk2]);
+    expect(result).toHaveLength(2);
+    expect(result).toContain(2);
+    expect(result).toContain(11);
+  });
+
+  it('should return sorted line numbers', () => {
+    const hunk1 = createHunk([{ type: 'added', content: 'line' }], 10);
+    const hunk2 = createHunk([{ type: 'added', content: 'line' }], 5);
+
+    const result = getChangedLineNumbers([hunk1, hunk2]);
+    expect(result).toEqual([5, 10]);
   });
 });
