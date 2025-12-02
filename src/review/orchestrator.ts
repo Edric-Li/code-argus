@@ -332,6 +332,7 @@ export class ReviewOrchestrator {
         diff: diffForContext,
         fileAnalyses: analysisResult.changes,
         standards,
+        diffFiles,
       },
       diffFiles,
     };
@@ -421,6 +422,7 @@ export class ReviewOrchestrator {
         diff: diffResult,
         fileAnalyses: analysisResult.changes,
         standards,
+        diffFiles,
       },
       diffFiles,
     };
@@ -820,6 +822,17 @@ export class ReviewOrchestrator {
       console.log(`[Orchestrator] Starting agent: ${agentType}`);
     }
 
+    // Extract whitespace-only changes for post-filtering (style-reviewer only)
+    let whitespaceOnlyChanges: Array<{ path: string; lines: number[] }> | undefined;
+    if (agentType === 'style-reviewer' && context.diffFiles) {
+      whitespaceOnlyChanges = context.diffFiles
+        .filter((f) => f.whitespaceOnlyLines && f.whitespaceOnlyLines.length > 0)
+        .map((f) => ({
+          path: f.path,
+          lines: f.whitespaceOnlyLines!,
+        }));
+    }
+
     // Build the prompt for this agent
     const userPrompt = buildSpecialistPrompt(agentType, {
       diff: context.diff.diff,
@@ -902,9 +915,20 @@ export class ReviewOrchestrator {
               issues?: RawIssue[];
               checklist?: ChecklistItem[];
             };
+
+            // Apply whitespace-only filter to structured output as well
+            let issues = parsed.issues || [];
+            if (
+              agentType === 'style-reviewer' &&
+              whitespaceOnlyChanges &&
+              whitespaceOnlyChanges.length > 0
+            ) {
+              issues = this.applyWhitespaceOnlyFilter(issues, whitespaceOnlyChanges);
+            }
+
             return {
               agent: agentType,
-              issues: parsed.issues || [],
+              issues,
               checklist: parsed.checklist || [],
               tokens_used: tokensUsed,
             };
@@ -950,18 +974,82 @@ export class ReviewOrchestrator {
     // Parse the text result if no structured output
     const parsed = parseAgentResponse(resultText);
 
+    // Post-filter: reduce confidence for style issues on whitespace-only lines
+    let filteredIssues = parsed.issues;
+    if (
+      agentType === 'style-reviewer' &&
+      whitespaceOnlyChanges &&
+      whitespaceOnlyChanges.length > 0
+    ) {
+      filteredIssues = this.applyWhitespaceOnlyFilter(parsed.issues, whitespaceOnlyChanges);
+    }
+
     if (this.options.verbose) {
       console.log(
-        `[Orchestrator] Agent ${agentType} completed: ${parsed.issues.length} issues found`
+        `[Orchestrator] Agent ${agentType} completed: ${filteredIssues.length} issues found`
       );
     }
 
     return {
       agent: agentType,
-      issues: parsed.issues,
+      issues: filteredIssues,
       checklist: parsed.checklist,
       tokens_used: tokensUsed,
     };
+  }
+
+  /**
+   * Filter out style issues on whitespace-only lines
+   *
+   * This is a deterministic code-based filter (no AI involved):
+   * - If a style issue's line_start is on a whitespace-only change line, remove it
+   * - These are pre-existing issues, not introduced by this change
+   *
+   * We use line_start because that's typically where the actual problem is located.
+   */
+  private applyWhitespaceOnlyFilter(
+    issues: RawIssue[],
+    whitespaceOnlyChanges: Array<{ path: string; lines: number[] }>
+  ): RawIssue[] {
+    // Build a quick lookup map: file -> Set of whitespace-only line numbers
+    const whitespaceLinesByFile = new Map<string, Set<number>>();
+    for (const { path, lines } of whitespaceOnlyChanges) {
+      whitespaceLinesByFile.set(path, new Set(lines));
+    }
+
+    let filteredCount = 0;
+
+    const filtered = issues.filter((issue) => {
+      // Only filter style category issues
+      if (issue.category !== 'style') {
+        return true; // Keep non-style issues
+      }
+
+      const whitespaceLines = whitespaceLinesByFile.get(issue.file);
+      if (!whitespaceLines) {
+        return true; // No whitespace-only lines in this file, keep the issue
+      }
+
+      // Check if the issue's starting line is a whitespace-only change
+      // This is the key logic: if line_start is whitespace-only, the issue is pre-existing
+      if (whitespaceLines.has(issue.line_start)) {
+        filteredCount++;
+        if (this.options.verbose) {
+          console.log(
+            `[Orchestrator] Filtered pre-existing style issue "${issue.id}" on whitespace-only line ${issue.line_start}: ${issue.title}`
+          );
+        }
+        return false; // Remove this issue
+      }
+
+      return true; // Keep the issue
+    });
+
+    if (filteredCount > 0) {
+      this.progress.info(`过滤了 ${filteredCount} 个仅空白变更行上的已存在 style 问题`);
+    }
+
+    return filtered;
   }
 }
 

@@ -249,6 +249,7 @@ export interface ProjectStandards {
 
 import type { DiffResult } from '../git/type.js';
 import type { ChangeAnalysis } from '../analyzer/types.js';
+import type { DiffFile } from '../git/parser.js';
 
 /**
  * Complete context for code review
@@ -262,6 +263,8 @@ export interface ReviewContext {
   fileAnalyses: ChangeAnalysis[];
   /** Project standards */
   standards: ProjectStandards;
+  /** Parsed diff files (with whitespace-only change detection) */
+  diffFiles?: DiffFile[];
 }
 
 // ============================================================================

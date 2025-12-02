@@ -14,6 +14,50 @@ export type FileCategory =
   | 'generated'; // Generated files (dist/, build/) - Ignore content
 
 /**
+ * Information about a line that changed only in whitespace
+ */
+export interface WhitespaceOnlyChange {
+  /** Line number in the new file */
+  newLineNumber: number;
+  /** Original content (before whitespace change) */
+  originalContent: string;
+  /** New content (after whitespace change) */
+  newContent: string;
+}
+
+/**
+ * Parsed diff hunk information
+ */
+export interface DiffHunk {
+  /** Starting line in old file */
+  oldStart: number;
+  /** Number of lines in old file */
+  oldCount: number;
+  /** Starting line in new file */
+  newStart: number;
+  /** Number of lines in new file */
+  newCount: number;
+  /** Lines in this hunk */
+  lines: HunkLine[];
+}
+
+/**
+ * A single line in a diff hunk
+ */
+export interface HunkLine {
+  /** Line type: context, added, or removed */
+  type: 'context' | 'added' | 'removed';
+  /** Line content (without the +/- prefix) */
+  content: string;
+  /** Line number in old file (for context and removed lines) */
+  oldLineNumber?: number;
+  /** Line number in new file (for context and added lines) */
+  newLineNumber?: number;
+  /** Whether this is a whitespace-only change (for added lines paired with removed lines) */
+  isWhitespaceOnly?: boolean;
+}
+
+/**
  * Parsed diff file information
  */
 export interface DiffFile {
@@ -25,6 +69,10 @@ export interface DiffFile {
   content: string;
   /** File category */
   category: FileCategory;
+  /** Parsed hunks (for detailed analysis) */
+  hunks?: DiffHunk[];
+  /** Lines that only changed in whitespace (line numbers in new file) */
+  whitespaceOnlyLines?: number[];
 }
 
 /**
@@ -92,11 +140,24 @@ function parseFileDiff(chunk: string): DiffFile | null {
   // Extract content with intelligent pruning
   const content = extractContent(chunk, category);
 
+  // For source files, parse hunks and detect whitespace-only changes
+  let hunks: DiffHunk[] | undefined;
+  let whitespaceOnlyLines: number[] | undefined;
+
+  if (category === 'source' || category === 'config') {
+    hunks = parseHunks(chunk);
+    if (hunks.length > 0) {
+      whitespaceOnlyLines = detectWhitespaceOnlyChanges(hunks);
+    }
+  }
+
   return {
     path,
     type,
     content,
     category,
+    hunks,
+    whitespaceOnlyLines,
   };
 }
 
@@ -205,4 +266,182 @@ function extractContent(chunk: string, category: FileCategory): string {
   // For deleted files, we want to preserve content to analyze what was removed
   // For source, config, data - preserve full content
   return chunk;
+}
+
+/**
+ * Parse hunks from a diff chunk
+ *
+ * @param chunk - Full diff chunk for a single file
+ * @returns Array of parsed hunks
+ */
+export function parseHunks(chunk: string): DiffHunk[] {
+  const hunks: DiffHunk[] = [];
+
+  // Match hunk headers: @@ -oldStart,oldCount +newStart,newCount @@
+  const hunkHeaderRegex = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm;
+  let match: RegExpExecArray | null;
+  const hunkPositions: {
+    start: number;
+    header: string;
+    oldStart: number;
+    oldCount: number;
+    newStart: number;
+    newCount: number;
+  }[] = [];
+
+  while ((match = hunkHeaderRegex.exec(chunk)) !== null) {
+    hunkPositions.push({
+      start: match.index,
+      header: match[0],
+      oldStart: parseInt(match[1] ?? '1', 10),
+      oldCount: match[2] ? parseInt(match[2], 10) : 1,
+      newStart: parseInt(match[3] ?? '1', 10),
+      newCount: match[4] ? parseInt(match[4], 10) : 1,
+    });
+  }
+
+  // Parse each hunk
+  for (let i = 0; i < hunkPositions.length; i++) {
+    const pos = hunkPositions[i]!;
+    const nextPos = hunkPositions[i + 1];
+    const hunkEnd = nextPos ? nextPos.start : chunk.length;
+
+    // Get hunk content (after the header line)
+    const headerEnd = pos.start + pos.header.length;
+    const hunkContent = chunk.slice(headerEnd, hunkEnd);
+    const rawLines = hunkContent.split('\n');
+
+    const lines: HunkLine[] = [];
+    let oldLine = pos.oldStart;
+    let newLine = pos.newStart;
+
+    for (const rawLine of rawLines) {
+      if (rawLine === '') continue;
+
+      const prefix = rawLine[0];
+      const content = rawLine.slice(1);
+
+      if (prefix === ' ') {
+        // Context line
+        lines.push({
+          type: 'context',
+          content,
+          oldLineNumber: oldLine,
+          newLineNumber: newLine,
+        });
+        oldLine++;
+        newLine++;
+      } else if (prefix === '-') {
+        // Removed line
+        lines.push({
+          type: 'removed',
+          content,
+          oldLineNumber: oldLine,
+        });
+        oldLine++;
+      } else if (prefix === '+') {
+        // Added line
+        lines.push({
+          type: 'added',
+          content,
+          newLineNumber: newLine,
+        });
+        newLine++;
+      }
+      // Skip lines that don't start with ' ', '-', or '+' (like "\ No newline at end of file")
+    }
+
+    hunks.push({
+      oldStart: pos.oldStart,
+      oldCount: pos.oldCount,
+      newStart: pos.newStart,
+      newCount: pos.newCount,
+      lines,
+    });
+  }
+
+  return hunks;
+}
+
+/**
+ * Normalize a line by removing all whitespace for comparison
+ *
+ * @param line - Line content
+ * @returns Normalized line (no whitespace)
+ */
+function normalizeForComparison(line: string): string {
+  return line.replace(/\s+/g, '');
+}
+
+/**
+ * Detect whitespace-only changes in hunks
+ *
+ * This function identifies lines where the only difference between
+ * the removed line and added line is whitespace (indentation, spaces, etc.)
+ *
+ * @param hunks - Parsed diff hunks
+ * @returns Array of line numbers (in new file) that are whitespace-only changes
+ */
+export function detectWhitespaceOnlyChanges(hunks: DiffHunk[]): number[] {
+  const whitespaceOnlyLines: number[] = [];
+
+  for (const hunk of hunks) {
+    const { lines } = hunk;
+
+    // Find consecutive removed+added pairs
+    let i = 0;
+    while (i < lines.length) {
+      // Collect consecutive removed lines
+      const removedLines: HunkLine[] = [];
+      while (i < lines.length && lines[i]!.type === 'removed') {
+        removedLines.push(lines[i]!);
+        i++;
+      }
+
+      // Collect consecutive added lines
+      const addedLines: HunkLine[] = [];
+      while (i < lines.length && lines[i]!.type === 'added') {
+        addedLines.push(lines[i]!);
+        i++;
+      }
+
+      // Match removed and added lines using content similarity (Map-based approach)
+      // This handles both equal and unequal counts, and correctly handles reordered lines
+      if (removedLines.length > 0 && addedLines.length > 0) {
+        // Create a map of normalized content to removed lines
+        const removedMap = new Map<string, HunkLine[]>();
+        for (const removed of removedLines) {
+          const normalized = normalizeForComparison(removed.content);
+          if (!removedMap.has(normalized)) {
+            removedMap.set(normalized, []);
+          }
+          removedMap.get(normalized)!.push(removed);
+        }
+
+        // Check each added line for a matching removed line
+        for (const added of addedLines) {
+          const normalizedAdded = normalizeForComparison(added.content);
+          const matchingRemoved = removedMap.get(normalizedAdded);
+
+          if (matchingRemoved && matchingRemoved.length > 0) {
+            const removed = matchingRemoved[0]!;
+            // Only mark as whitespace-only if content actually differs (not identical)
+            if (removed.content !== added.content && added.newLineNumber !== undefined) {
+              whitespaceOnlyLines.push(added.newLineNumber);
+              added.isWhitespaceOnly = true;
+            }
+            // Remove the used match
+            matchingRemoved.shift();
+          }
+        }
+      }
+
+      // Skip context lines
+      while (i < lines.length && lines[i]!.type === 'context') {
+        i++;
+      }
+    }
+  }
+
+  return whitespaceOnlyLines.sort((a, b) => a - b);
 }
