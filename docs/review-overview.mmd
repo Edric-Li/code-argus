@@ -1,0 +1,58 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5', 'primaryTextColor': '#fff'}}}%%
+
+flowchart TB
+    subgraph Input["输入"]
+        A["review /repo feature main"]
+    end
+
+    subgraph Phase1["Phase 1: 上下文构建"]
+        direction LR
+        B1["Git Diff<br/>三点式比较"] --> B2["解析 Diff"] --> B3["本地分析"] --> B4["提取标准"]
+    end
+
+    subgraph Selection["Agent 选择"]
+        C["智能路由<br/>规则 + LLM 兜底"]
+    end
+
+    subgraph Phase2["Phase 2: Agent 执行"]
+        direction LR
+        D1["🔒 Security"]
+        D2["🧠 Logic"]
+        D3["⚡ Performance"]
+        D4["✨ Style"]
+    end
+
+    subgraph Optimization["优化处理"]
+        direction LR
+        E1["去重<br/>N→M"] --> E2["置信度过滤<br/>动态阈值"]
+    end
+
+    subgraph Phase3["Phase 3: 验证"]
+        F["挑战模式<br/>多轮验证"]
+    end
+
+    subgraph Phase4["Phase 4: 输出"]
+        direction LR
+        G1["聚合排序"] --> G2["生成报告"]
+    end
+
+    subgraph Output["输出格式"]
+        direction LR
+        H1["Markdown"]
+        H2["JSON"]
+        H3["Summary"]
+        H4["PR Comments"]
+    end
+
+    A --> Phase1
+    Phase1 --> C
+    C --> D1 & D2 & D3 & D4
+    D1 & D2 & D3 & D4 --> Optimization
+    Optimization --> F
+    F --> Phase4
+    G2 --> H1 & H2 & H3 & H4
+
+    style Phase1 fill:#4f46e5,color:#fff
+    style Phase2 fill:#3b82f6,color:#fff
+    style Phase3 fill:#8b5cf6,color:#fff
+    style Phase4 fill:#22c55e,color:#fff

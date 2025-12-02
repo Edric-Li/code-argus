@@ -1,0 +1,115 @@
+@startuml review-flow
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam shadowing false
+
+title Code Review 完整流程图
+
+|CLI|
+start
+:npm run dev -- review
+/repo feature main;
+
+|#LightBlue|Phase 1: 上下文构建|
+:fetchRemote()
+git fetch origin;
+:getDiffWithOptions()
+git diff origin/main...origin/feature;
+:parseDiff()
+解析为 DiffFile[];
+fork
+  :LocalDiffAnalyzer
+  快速风险评估;
+fork again
+  :extractStandards()
+  ESLint/TS/Prettier;
+end fork
+:构建 ReviewContext;
+
+|#LightYellow|Agent 选择|
+:selectAgents();
+if (confidence >= 0.8?) then (yes)
+  :使用规则结果;
+else (no)
+  :LLM 兜底决策;
+endif
+:确定要运行的 Agents;
+
+|CLI|
+:createWorktreeForReview()
+创建临时 worktree;
+
+|#LightGreen|Phase 2: Agent 执行|
+fork
+  :security-reviewer
+  注入/认证/泄露;
+fork again
+  :logic-reviewer
+  空值/竞态/边界;
+fork again
+  :performance-reviewer
+  N+1/内存/复杂度;
+fork again
+  :style-reviewer
+  命名/规范;
+end fork
+:汇总 AgentResult[];
+
+|#Pink|去重 (优化)|
+:IssueDeduplicator
+Claude Haiku 语义判断;
+:N 个问题 → M 个唯一问题;
+
+|#LightYellow|置信度过滤|
+:动态阈值检查;
+note right
+  critical >= 0.2
+  error >= 0.4
+  warning >= 0.5
+  suggestion >= 0.7
+end note
+if (通过阈值?) then (yes)
+  :进入验证队列;
+else (no)
+  :自动拒绝;
+endif
+
+|#Lavender|Phase 3: 验证|
+:按文件分组;
+repeat
+  :验证轮次;
+  if (连续2轮一致?) then (yes)
+    :采用结果;
+    break
+  endif
+repeat while (已到5轮?) is (no)
+->yes;
+:多数投票;
+:输出 ValidatedIssue
+confirmed/rejected/uncertain;
+
+|#LightCyan|Phase 4: 聚合|
+:过滤 rejected;
+:保留 confirmed + uncertain;
+:按 severity → confidence 排序;
+:合并 checklist;
+
+|CLI|
+:generateReport();
+switch (输出格式)
+case (markdown)
+  :人类可读报告;
+case (json)
+  :结构化数据;
+case (summary)
+  :简洁摘要;
+case (pr-comments)
+  :PR 内联评论;
+endswitch
+
+:removeWorktree()
+清理临时目录;
+:输出到 stdout;
+stop
+
+@enduml

@@ -1,0 +1,169 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5', 'primaryTextColor': '#fff', 'primaryBorderColor': '#3730a3', 'lineColor': '#6366f1', 'secondaryColor': '#f0fdf4', 'tertiaryColor': '#fef3c7'}}}%%
+
+flowchart TD
+    subgraph CLI["CLI 入口 (index.ts)"]
+        A[npm run dev -- review<br/>/repo feature main]
+    end
+
+    subgraph Phase1["Phase 1: 上下文构建"]
+        B1[fetchRemote<br/>git fetch origin]
+        B2[getDiffWithOptions<br/>git diff origin/main...origin/feature<br/>三点式 diff]
+        B3[parseDiff<br/>解析为 DiffFile 数组<br/>文件分类]
+        B4[LocalDiffAnalyzer<br/>快速风险评估<br/>HIGH/MEDIUM/LOW]
+        B5[extractStandards<br/>ESLint/TS/Prettier<br/>项目配置提取]
+    end
+
+    subgraph AgentSelect["智能 Agent 选择"]
+        C1{规则过滤}
+        C2[纯文档变更<br/>跳过 security]
+        C3[仅样式文件<br/>仅 style]
+        C4[仅测试变更<br/>跳过 style]
+        C5{confidence < 0.8?}
+        C6[LLM 兜底<br/>Claude 决策]
+        C7[纯规则结果<br/>confidence=1]
+    end
+
+    subgraph Worktree["Worktree 创建"]
+        D1[createWorktreeForReview<br/>git worktree add --detach<br/>/tmp/argus-xxx origin/feature]
+    end
+
+    subgraph Phase2["Phase 2: 并行 Agent 执行"]
+        E1[security-reviewer<br/>注入攻击/认证/数据泄露]
+        E2[logic-reviewer<br/>空值检查/竞态/边界]
+        E3[performance-reviewer<br/>N+1/内存泄漏/复杂度]
+        E4[style-reviewer<br/>命名/规范/复杂度]
+        E5[AgentResult 汇总<br/>issues + checklist + tokens]
+    end
+
+    subgraph Dedup["去重 (验证前)"]
+        F1[IssueDeduplicator<br/>Claude Haiku 语义判断]
+        F2[N 个问题 → M 个唯一问题<br/>关键优化: 节省验证调用]
+    end
+
+    subgraph ConfFilter["置信度过滤"]
+        G1{动态阈值判断}
+        G2[critical ≥ 0.2<br/>error ≥ 0.4<br/>warning ≥ 0.5<br/>suggestion ≥ 0.7]
+        G3[通过阈值<br/>进入验证]
+        G4[低于阈值<br/>自动拒绝]
+    end
+
+    subgraph Phase3["Phase 3: 验证 (挑战模式)"]
+        H1[按文件分组<br/>同文件共享上下文]
+        H2[Round 1: 初步验证]
+        H3[Round 2: 你确定吗?]
+        H4[Round 3: 更具体证据]
+        H5[Round 4: 魔鬼代言人]
+        H6[Round 5: 最终判定]
+        H7{连续2轮一致?}
+        H8[采用该结果]
+        H9{已到5轮?}
+        H10[多数投票]
+        H11[ValidatedIssue<br/>confirmed/rejected/uncertain]
+    end
+
+    subgraph Phase4["Phase 4: 聚合"]
+        I1[过滤 rejected]
+        I2[保留 confirmed + uncertain]
+        I3[按严重程度排序<br/>critical → suggestion]
+        I4[按置信度排序]
+        I5[合并 checklist]
+    end
+
+    subgraph Report["报告生成"]
+        J1{输出格式}
+        J2[markdown<br/>人类可读]
+        J3[json<br/>结构化数据]
+        J4[summary<br/>简洁摘要]
+        J5[pr-comments<br/>PR 内联评论]
+        J6[ReviewReport<br/>summary + risk_level<br/>issues + metrics]
+    end
+
+    subgraph Cleanup["清理 & 输出"]
+        K1[removeWorktree<br/>删除临时 worktree]
+        K2[输出到 stdout]
+        K3[返回 exit code]
+    end
+
+    %% 主流程连接
+    A --> B1
+    B1 --> B2
+    B2 --> B3
+    B3 --> B4
+    B4 --> B5
+
+    B5 --> C1
+    C1 --> C2
+    C1 --> C3
+    C1 --> C4
+    C2 --> C5
+    C3 --> C5
+    C4 --> C5
+    C5 -->|Yes| C6
+    C5 -->|No| C7
+    C6 --> D1
+    C7 --> D1
+
+    D1 --> E1
+    D1 --> E2
+    D1 --> E3
+    D1 --> E4
+    E1 --> E5
+    E2 --> E5
+    E3 --> E5
+    E4 --> E5
+
+    E5 --> F1
+    F1 --> F2
+
+    F2 --> G1
+    G1 --> G2
+    G2 --> G3
+    G2 --> G4
+
+    G3 --> H1
+    H1 --> H2
+    H2 --> H3
+    H3 --> H7
+    H7 -->|Yes| H8
+    H7 -->|No| H4
+    H4 --> H5
+    H5 --> H7
+    H5 --> H9
+    H9 -->|Yes| H10
+    H9 -->|No| H6
+    H6 --> H7
+    H8 --> H11
+    H10 --> H11
+
+    G4 --> I1
+    H11 --> I1
+    I1 --> I2
+    I2 --> I3
+    I3 --> I4
+    I4 --> I5
+
+    I5 --> J1
+    J1 --> J2
+    J1 --> J3
+    J1 --> J4
+    J1 --> J5
+    J2 --> J6
+    J3 --> J6
+    J4 --> J6
+    J5 --> J6
+
+    J6 --> K1
+    K1 --> K2
+    K2 --> K3
+
+    %% 样式
+    classDef phase fill:#4f46e5,stroke:#3730a3,color:#fff
+    classDef process fill:#f0fdf4,stroke:#22c55e,color:#000
+    classDef decision fill:#fef3c7,stroke:#f59e0b,color:#000
+    classDef agent fill:#dbeafe,stroke:#3b82f6,color:#000
+    classDef output fill:#fce7f3,stroke:#ec4899,color:#000
+
+    class A,B1,B2,B3,B4,B5 phase
+    class C1,C5,G1,H7,H9,J1 decision
+    class E1,E2,E3,E4 agent
+    class J2,J3,J4,J5,J6,K1,K2,K3 output

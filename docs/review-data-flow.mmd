@@ -1,0 +1,70 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5'}}}%%
+
+flowchart LR
+    subgraph Input["输入"]
+        A1[repoPath]
+        A2[sourceBranch<br/>feature]
+        A3[targetBranch<br/>main]
+    end
+
+    subgraph GitOps["Git 操作"]
+        B1[git fetch origin]
+        B2[git diff<br/>origin/main...origin/feature]
+        B3[Raw Diff String]
+    end
+
+    subgraph Parse["Diff 解析"]
+        C1[parseDiff]
+        C2[DiffFile 数组]
+        C3{文件分类}
+        C4[source: ts/js/css]
+        C5[config: package.json]
+        C6[data: json/yaml]
+        C7[lock: package-lock]
+        C8[generated: dist/]
+    end
+
+    subgraph LocalAnalysis["本地分析 (无LLM)"]
+        D1[LocalDiffAnalyzer]
+        D2[ChangeAnalysis]
+        D3[风险评估<br/>HIGH/MEDIUM/LOW]
+    end
+
+    subgraph Standards["标准提取"]
+        E1[extractStandards]
+        E2[ESLintStandards]
+        E3[TypeScriptStandards]
+        E4[PrettierStandards]
+        E5[ProjectStandards]
+    end
+
+    subgraph Context["ReviewContext"]
+        F1[context 对象]
+    end
+
+    A1 --> B1
+    A2 --> B2
+    A3 --> B2
+    B1 --> B2
+    B2 --> B3
+    B3 --> C1
+    C1 --> C2
+    C2 --> C3
+    C3 --> C4
+    C3 --> C5
+    C3 --> C6
+    C3 --> C7
+    C3 --> C8
+    C2 --> D1
+    D1 --> D2
+    D2 --> D3
+    C2 --> E1
+    E1 --> E2
+    E1 --> E3
+    E1 --> E4
+    E2 --> E5
+    E3 --> E5
+    E4 --> E5
+    C2 --> F1
+    D3 --> F1
+    E5 --> F1

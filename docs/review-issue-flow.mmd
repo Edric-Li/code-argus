@@ -1,0 +1,103 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5'}}}%%
+
+flowchart TD
+    subgraph Agents["Agent 执行"]
+        A1[security-reviewer]
+        A2[logic-reviewer]
+        A3[performance-reviewer]
+        A4[style-reviewer]
+    end
+
+    subgraph RawOutput["原始输出"]
+        B1[RawIssue 数组<br/>N 个问题]
+        B2["{ id, file, line_start, line_end,<br/>category, severity, title,<br/>description, confidence,<br/>source_agent }"]
+    end
+
+    subgraph Dedup["去重阶段"]
+        C1[IssueDeduplicator]
+        C2[语义相似度判断<br/>Claude Haiku]
+        C3[唯一问题<br/>M 个 M≤N]
+        C4[重复组<br/>记录合并原因]
+    end
+
+    subgraph Filter["置信度过滤"]
+        D1{检查置信度}
+        D2[critical ≥ 0.2]
+        D3[error ≥ 0.4]
+        D4[warning ≥ 0.5]
+        D5[suggestion ≥ 0.7]
+        D6[高置信度队列]
+        D7[自动拒绝队列]
+    end
+
+    subgraph Validate["验证阶段"]
+        E1[IssueValidator]
+        E2[读取源文件]
+        E3[挑战模式<br/>多轮验证]
+        E4[ValidatedIssue]
+        E5["{ validation_status,<br/>grounding_evidence,<br/>final_confidence }"]
+    end
+
+    subgraph Status["验证状态"]
+        F1[confirmed<br/>已确认]
+        F2[rejected<br/>已拒绝]
+        F3[uncertain<br/>不确定]
+    end
+
+    subgraph Aggregate["聚合阶段"]
+        G1[aggregate]
+        G2[过滤 rejected]
+        G3[排序: severity → confidence]
+        G4[AggregationResult]
+    end
+
+    subgraph Report["报告生成"]
+        H1[generateReport]
+        H2[ReviewReport]
+        H3["summary, risk_level,<br/>issues, checklist,<br/>metrics, metadata"]
+    end
+
+    A1 --> B1
+    A2 --> B1
+    A3 --> B1
+    A4 --> B1
+    B1 --> B2
+    B2 --> C1
+    C1 --> C2
+    C2 --> C3
+    C2 --> C4
+    C3 --> D1
+    D1 --> D2
+    D1 --> D3
+    D1 --> D4
+    D1 --> D5
+    D2 --> D6
+    D3 --> D6
+    D4 --> D6
+    D5 --> D6
+    D2 --> D7
+    D3 --> D7
+    D4 --> D7
+    D5 --> D7
+    D6 --> E1
+    E1 --> E2
+    E2 --> E3
+    E3 --> E4
+    E4 --> E5
+    E5 --> F1
+    E5 --> F2
+    E5 --> F3
+    D7 --> F2
+    F1 --> G1
+    F2 --> G1
+    F3 --> G1
+    G1 --> G2
+    G2 --> G3
+    G3 --> G4
+    G4 --> H1
+    H1 --> H2
+    H2 --> H3
+
+    style F1 fill:#22c55e,color:#fff
+    style F2 fill:#ef4444,color:#fff
+    style F3 fill:#f59e0b,color:#fff

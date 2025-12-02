@@ -1,0 +1,96 @@
+%%{init: {'theme': 'base'}}%%
+
+sequenceDiagram
+    autonumber
+    participant CLI as CLI (index.ts)
+    participant Orch as Orchestrator
+    participant Git as Git Operations
+    participant Parser as Diff Parser
+    participant Analyzer as Local Analyzer
+    participant Selector as Agent Selector
+    participant Agents as Review Agents
+    participant Dedup as Deduplicator
+    participant Validator as Validator
+    participant Aggregator as Aggregator
+    participant Reporter as Report Generator
+
+    CLI->>Orch: review(repoPath, source, target)
+
+    rect rgb(240, 253, 244)
+        Note over Orch,Analyzer: Phase 1: 上下文构建
+        Orch->>Git: fetchRemote(origin)
+        Git-->>Orch: success
+        Orch->>Git: getDiffWithOptions()
+        Note right of Git: git diff origin/main...origin/feature
+        Git-->>Orch: raw diff string
+        Orch->>Parser: parseDiff(rawDiff)
+        Parser-->>Orch: DiffFile[]
+        Orch->>Analyzer: analyze(diffFiles)
+        Note right of Analyzer: 无 LLM 的快速分析
+        Analyzer-->>Orch: ChangeAnalysis[]
+        Orch->>Orch: extractStandards()
+        Note right of Orch: ESLint/TS/Prettier
+    end
+
+    Orch->>Selector: selectAgents(diffFiles)
+    alt confidence >= 0.8
+        Selector-->>Orch: AgentType[] (规则决策)
+    else confidence < 0.8
+        Selector->>Selector: LLM 兜底决策
+        Selector-->>Orch: AgentType[]
+    end
+
+    Orch->>Git: createWorktreeForReview()
+    Git-->>Orch: WorktreeInfo
+
+    rect rgb(219, 234, 254)
+        Note over Orch,Agents: Phase 2: 并行 Agent 执行
+        par 并行执行
+            Orch->>Agents: runSingleAgent(security)
+            Orch->>Agents: runSingleAgent(logic)
+            Orch->>Agents: runSingleAgent(performance)
+            Orch->>Agents: runSingleAgent(style)
+        end
+        Note right of Agents: 使用 Read/Grep/Glob 工具
+        Agents-->>Orch: AgentResult[] {issues, checklist}
+    end
+
+    rect rgb(254, 243, 199)
+        Note over Orch,Dedup: 去重 (验证前优化)
+        Orch->>Dedup: deduplicate(allIssues)
+        Note right of Dedup: Claude Haiku 语义判断
+        Dedup-->>Orch: uniqueIssues (M <= N)
+    end
+
+    Orch->>Orch: filterByConfidence()
+    Note right of Orch: critical≥0.2, error≥0.4, warning≥0.5, suggestion≥0.7
+
+    rect rgb(252, 231, 243)
+        Note over Orch,Validator: Phase 3: 验证 (挑战模式)
+        Orch->>Validator: validateBatch(highConfidenceIssues)
+        loop 每个问题
+            Validator->>Validator: 读取源文件
+            loop 挑战轮次 (最多5轮)
+                Validator->>Validator: 验证轮次
+                alt 连续2轮一致
+                    Validator->>Validator: 采用结果
+                else 已到5轮
+                    Validator->>Validator: 多数投票
+                end
+            end
+        end
+        Validator-->>Orch: ValidatedIssue[]
+    end
+
+    rect rgb(243, 232, 255)
+        Note over Orch,Reporter: Phase 4: 聚合与报告
+        Orch->>Aggregator: aggregate(validatedIssues, checklists)
+        Aggregator-->>Orch: AggregationResult
+        Orch->>Reporter: generateReport(result, metrics)
+        Reporter-->>Orch: ReviewReport
+    end
+
+    Orch->>Git: removeWorktree()
+    Orch-->>CLI: ReviewReport
+
+    CLI->>CLI: 输出 (markdown/json/summary)
