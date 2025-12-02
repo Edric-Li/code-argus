@@ -39,7 +39,14 @@ export interface IProgressPrinter {
   stats(items: Array<{ label: string; value: string | number }>): void;
 
   // Streaming validation methods
-  issueDiscovered(title: string, file: string, severity: string): void;
+  issueDiscovered(
+    title: string,
+    file: string,
+    severity: string,
+    line?: number,
+    description?: string,
+    suggestion?: string
+  ): void;
   issueValidated(title: string, status: ValidationStatusType, reason?: string): void;
   autoRejected(title: string, reason: string): void;
   validationRound(
@@ -313,7 +320,14 @@ export class ProgressPrinter implements IProgressPrinter {
   /**
    * Print issue discovered (before validation)
    */
-  issueDiscovered(title: string, file: string, severity: string): void {
+  issueDiscovered(
+    title: string,
+    file: string,
+    severity: string,
+    _line?: number,
+    _description?: string,
+    _suggestion?: string
+  ): void {
     this.stopSpinner();
     const fileName = file.split('/').pop() || file;
     const severityIcon =

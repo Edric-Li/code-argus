@@ -70,9 +70,12 @@ export interface ValidationIssueData {
   issueId: string;
   title: string;
   file: string;
+  line?: number;
   severity: string;
   status: 'discovered' | 'confirmed' | 'rejected' | 'uncertain' | 'auto_rejected' | 'deduplicated';
   reason?: string;
+  description?: string;
+  suggestion?: string;
   round?: number;
   maxRounds?: number;
   timestamp: string;
@@ -398,7 +401,10 @@ export class ReviewEventEmitter extends EventEmitter {
     status: ValidationIssueData['status'],
     reason?: string,
     round?: number,
-    maxRounds?: number
+    maxRounds?: number,
+    line?: number,
+    description?: string,
+    suggestion?: string
   ): void {
     // Update validation counts
     switch (status) {
@@ -426,9 +432,12 @@ export class ReviewEventEmitter extends EventEmitter {
         issueId,
         title,
         file,
+        line,
         severity,
         status,
         reason,
+        description,
+        suggestion,
         round,
         maxRounds,
         timestamp: this.timestamp(),

@@ -249,13 +249,26 @@ export class StructuredProgressPrinter implements IProgressPrinter {
 
   // ============ Streaming Validation Methods ============
 
-  issueDiscovered(title: string, file: string, severity: string): void {
+  issueDiscovered(
+    title: string,
+    file: string,
+    severity: string,
+    line?: number,
+    description?: string,
+    suggestion?: string
+  ): void {
     this.emitter.validationIssue(
       this.generateIssueId(title, file),
       title,
       file,
       severity,
-      'discovered'
+      'discovered',
+      undefined, // reason
+      undefined, // round
+      undefined, // maxRounds
+      line,
+      description,
+      suggestion
     );
   }
 
@@ -468,9 +481,9 @@ export function createDualProgressPrinter(
       ttyPrinter.stats(items);
       structured.stats(items);
     },
-    issueDiscovered: (title, file, severity) => {
-      ttyPrinter.issueDiscovered(title, file, severity);
-      structured.issueDiscovered(title, file, severity);
+    issueDiscovered: (title, file, severity, line, description, suggestion) => {
+      ttyPrinter.issueDiscovered(title, file, severity, line, description, suggestion);
+      structured.issueDiscovered(title, file, severity, line, description, suggestion);
     },
     issueValidated: (title, status, reason) => {
       ttyPrinter.issueValidated(title, status, reason);

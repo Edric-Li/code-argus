@@ -321,7 +321,14 @@ export class StreamingReviewOrchestrator {
             projectRules: projectRulesText || undefined,
             callbacks: {
               onIssueDiscovered: (issue) => {
-                this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
+                this.progress.issueDiscovered(
+                  issue.title,
+                  issue.file,
+                  issue.severity,
+                  issue.line_start,
+                  issue.description,
+                  issue.suggestion
+                );
               },
               onIssueValidated: (issue) => {
                 const reason =
@@ -413,7 +420,14 @@ export class StreamingReviewOrchestrator {
               } else if (this.options.skipValidation) {
                 // When skipping validation, we need to print the issue here
                 // since enqueue() won't be called
-                this.progress.issueDiscovered(issue.title, issue.file, issue.severity);
+                this.progress.issueDiscovered(
+                  issue.title,
+                  issue.file,
+                  issue.severity,
+                  issue.line_start,
+                  issue.description,
+                  issue.suggestion
+                );
                 this.rawIssuesForSkipMode.push(issue);
               }
             },
@@ -618,6 +632,7 @@ export class StreamingReviewOrchestrator {
         diff: diffResult,
         fileAnalyses: analysisResult.changes,
         standards,
+        diffFiles, // Include parsed diff files for filtering
       },
       diffFiles,
     };
@@ -635,8 +650,42 @@ export class StreamingReviewOrchestrator {
     let totalTokens = 0;
     const allChecklists: ChecklistItem[] = [];
 
-    // Create MCP server with report_issue tool
-    const mcpServer = this.createReportIssueMcpServer();
+    // Build filter maps for style-reviewer (from parsed diff files)
+    const diffFiles = context.diffFiles;
+    let changedLinesByFile: Map<string, Set<number>> | undefined;
+    let whitespaceOnlyLinesByFile: Map<string, Set<number>> | undefined;
+
+    if (diffFiles && diffFiles.length > 0) {
+      // Changed lines: lines with '+' prefix in diff
+      changedLinesByFile = new Map();
+      for (const file of diffFiles) {
+        if (file.changedLines && file.changedLines.length > 0) {
+          changedLinesByFile.set(file.path, new Set(file.changedLines));
+        }
+      }
+
+      // Whitespace-only change lines
+      whitespaceOnlyLinesByFile = new Map();
+      for (const file of diffFiles) {
+        if (file.whitespaceOnlyLines && file.whitespaceOnlyLines.length > 0) {
+          whitespaceOnlyLinesByFile.set(file.path, new Set(file.whitespaceOnlyLines));
+        }
+      }
+
+      if (this.options.verbose) {
+        const filesWithChanges = changedLinesByFile.size;
+        const filesWithWsOnly = whitespaceOnlyLinesByFile.size;
+        console.log(
+          `[StreamingOrchestrator] Style filter maps built: ${filesWithChanges} files with changed lines, ${filesWithWsOnly} files with whitespace-only changes`
+        );
+      }
+    }
+
+    // Create MCP server with report_issue tool (includes filter maps)
+    const mcpServer = this.createReportIssueMcpServer(
+      changedLinesByFile,
+      whitespaceOnlyLinesByFile
+    );
 
     // Show agents starting
     for (const agentType of agentsToRun) {
@@ -701,12 +750,19 @@ export class StreamingReviewOrchestrator {
 
   /**
    * Create MCP server with report_issue tool
+   *
+   * @param changedLinesByFile - Map of file path to set of changed line numbers (for filtering style issues)
+   * @param whitespaceOnlyLinesByFile - Map of file path to set of whitespace-only change line numbers
    */
-  private createReportIssueMcpServer() {
+  private createReportIssueMcpServer(
+    changedLinesByFile?: Map<string, Set<number>>,
+    whitespaceOnlyLinesByFile?: Map<string, Set<number>>
+  ) {
     const validator = this.streamingValidator;
     const deduplicator = this.realtimeDeduplicator;
     const verbose = this.options.verbose;
     const skipValidation = this.options.skipValidation;
+    const progress = this.progress;
 
     // We need to track which agent is calling, so we'll create per-agent servers
     return (agentType: AgentType) =>
@@ -742,6 +798,86 @@ Write all text (title, description, suggestion) in Chinese.`,
 
               // Generate unique issue ID
               const issueId = `${agentType}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+              // Step 0: Apply style-reviewer filters (before dedup/validation)
+              // Filter 1: Check if style issue is on unchanged context line
+              if (
+                agentType === 'style-reviewer' &&
+                args.category === 'style' &&
+                changedLinesByFile
+              ) {
+                const changedLines = changedLinesByFile.get(args.file);
+                if (!changedLines || changedLines.size === 0) {
+                  // No changed lines in this file - filter out
+                  if (verbose) {
+                    console.log(
+                      `[StreamingOrchestrator] Filtered style issue "${args.title}" - file has no changed lines: ${args.file}`
+                    );
+                  }
+                  progress.info(`过滤: "${args.title}" (文件无改动行)`);
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `⏭️ 问题已过滤 (ID: ${issueId})\n原因: 样式问题在未变更的文件行上`,
+                      },
+                    ],
+                  };
+                }
+
+                // Check if issue's line range overlaps with any changed line
+                const lineStart = args.line_start;
+                const lineEnd = args.line_end ?? args.line_start;
+                let hasOverlap = false;
+                for (let line = lineStart; line <= lineEnd; line++) {
+                  if (changedLines.has(line)) {
+                    hasOverlap = true;
+                    break;
+                  }
+                }
+
+                if (!hasOverlap) {
+                  if (verbose) {
+                    console.log(
+                      `[StreamingOrchestrator] Filtered style issue "${args.title}" on unchanged line ${lineStart}: ${args.file}`
+                    );
+                  }
+                  progress.info(`过滤: "${args.title}" (行 ${lineStart} 未变更)`);
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `⏭️ 问题已过滤 (ID: ${issueId})\n原因: 样式问题在未变更的行上 (行 ${lineStart}-${lineEnd})`,
+                      },
+                    ],
+                  };
+                }
+              }
+
+              // Filter 2: Check if style issue is on whitespace-only change line
+              if (
+                agentType === 'style-reviewer' &&
+                args.category === 'style' &&
+                whitespaceOnlyLinesByFile
+              ) {
+                const whitespaceLines = whitespaceOnlyLinesByFile.get(args.file);
+                if (whitespaceLines && whitespaceLines.has(args.line_start)) {
+                  if (verbose) {
+                    console.log(
+                      `[StreamingOrchestrator] Filtered pre-existing style issue "${args.title}" on whitespace-only line ${args.line_start}: ${args.file}`
+                    );
+                  }
+                  progress.info(`过滤: "${args.title}" (仅空白变更行 ${args.line_start})`);
+                  return {
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `⏭️ 问题已过滤 (ID: ${issueId})\n原因: 样式问题在仅空白变更的行上 (行 ${args.line_start})`,
+                      },
+                    ],
+                  };
+                }
+              }
 
               const rawIssue: RawIssue = {
                 id: issueId,
