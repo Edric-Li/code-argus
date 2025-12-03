@@ -8,6 +8,7 @@ import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { DiffOptions, DiffResult } from './type.js';
 import { GitError } from './type.js';
+import { fetchWithLockSync } from './fetch-lock.js';
 
 // ============================================================================
 // Common Utilities
@@ -46,24 +47,20 @@ function validateGitRepository(repoPath: string): string {
 }
 
 /**
- * Fetch remote refs
+ * Fetch remote refs with locking to prevent concurrent fetch conflicts
+ *
+ * When multiple argus processes run against the same repository,
+ * this function uses file locking and caching to:
+ * - Prevent concurrent git fetch operations (which would fail due to git locks)
+ * - Skip redundant fetches within a time window (30 seconds by default)
+ * - Clean up stale locks from crashed processes
  *
  * @param repoPath - Path to the git repository
  * @param remote - Remote name (default: 'origin')
- * @returns true if fetch succeeded, false otherwise
+ * @returns true if fetch succeeded or was skipped (cache hit), false on failure
  */
 export function fetchRemote(repoPath: string, remote: string = 'origin'): boolean {
-  try {
-    execSync(`git fetch ${remote}`, {
-      cwd: repoPath,
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
-    return true;
-  } catch {
-    console.warn(`Warning: Failed to fetch from ${remote}, using existing refs`);
-    return false;
-  }
+  return fetchWithLockSync(repoPath, remote);
 }
 
 /**
