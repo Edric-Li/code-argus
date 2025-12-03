@@ -119,7 +119,7 @@ argus review /repo feature main --json-logs
 {"type":"agent:start","data":{"agent":"security-reviewer","timestamp":"..."}}
 {"type":"agent:progress","data":{"agent":"security-reviewer","activity":"Reading file: src/auth.ts","timestamp":"..."}}
 {"type":"agent:complete","data":{"agent":"security-reviewer","status":"completed","issuesFound":3,"elapsedMs":5000,"timestamp":"..."}}
-{"type":"validation:issue","data":{"issueId":"sql-injection","title":"SQL Injection","status":"confirmed","timestamp":"..."}}
+{"type":"validation:issue","data":{"issueId":"sql-injection-auth.ts","title":"SQL Injection","file":"src/auth.ts","line":42,"severity":"error","status":"confirmed","description":"User input directly concatenated into SQL query","suggestion":"Use parameterized queries instead","timestamp":"..."}}
 {"type":"review:complete","data":{"totalIssues":5,"elapsedMs":30000,"timestamp":"..."}}
 {"type":"report","data":{"report":{"issues":[...],"metrics":{...},"metadata":{...}},"timestamp":"..."}}
 ```

@@ -119,7 +119,7 @@ argus review /repo feature main --json-logs
 {"type":"agent:start","data":{"agent":"security-reviewer","timestamp":"..."}}
 {"type":"agent:progress","data":{"agent":"security-reviewer","activity":"Reading file: src/auth.ts","timestamp":"..."}}
 {"type":"agent:complete","data":{"agent":"security-reviewer","status":"completed","issuesFound":3,"elapsedMs":5000,"timestamp":"..."}}
-{"type":"validation:issue","data":{"issueId":"sql-injection","title":"SQL Injection","status":"confirmed","timestamp":"..."}}
+{"type":"validation:issue","data":{"issueId":"sql-injection-auth.ts","title":"SQL 注入漏洞","file":"src/auth.ts","line":42,"severity":"error","status":"confirmed","description":"用户输入直接拼接到 SQL 查询中","suggestion":"使用参数化查询替代字符串拼接","timestamp":"..."}}
 {"type":"review:complete","data":{"totalIssues":5,"elapsedMs":30000,"timestamp":"..."}}
 {"type":"report","data":{"report":{"issues":[...],"metrics":{...},"metadata":{...}},"timestamp":"..."}}
 ```
