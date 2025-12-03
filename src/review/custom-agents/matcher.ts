@@ -62,7 +62,7 @@ export interface CustomAgentMatchResult {
  */
 export function buildTriggerContext(
   diffFiles: DiffFile[],
-  fileAnalyses: ChangeAnalysis[],
+  _fileAnalyses: ChangeAnalysis[],
   diffContent?: string
 ): TriggerContext {
   // Map file type to status
@@ -88,20 +88,15 @@ export function buildTriggerContext(
     };
   });
 
-  // Build changed symbols from analyses
-  const analysesMap = new Map(fileAnalyses.map((a) => [a.file_path, a]));
-  const changed_symbols = diffFiles.map((file) => {
-    const analysis = analysesMap.get(file.path);
-    const hints = analysis?.semantic_hints || {};
-
-    return {
-      file: file.path,
-      functions: hints.functions?.map((f) => f.name) || [],
-      classes: [], // Not extracted in current analysis
-      interfaces: hints.interfaces?.map((i) => i.name) || [],
-      exports: [...(hints.exports?.added || []), ...(hints.exports?.removed || [])],
-    };
-  });
+  // Build changed symbols from diff files
+  // Note: detailed symbol extraction is not available from local analyzer
+  const changed_symbols = diffFiles.map((file) => ({
+    file: file.path,
+    functions: [] as string[],
+    classes: [] as string[],
+    interfaces: [] as string[],
+    exports: [] as string[],
+  }));
 
   // Calculate stats
   const stats = {

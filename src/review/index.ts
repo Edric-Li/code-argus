@@ -4,16 +4,13 @@
  * Multi-agent code review system using Claude Agent SDK.
  */
 
-// Main orchestrator (MCP mode with streaming validation)
+// Main orchestrator (streaming validation)
 export {
   StreamingReviewOrchestrator,
   createStreamingOrchestrator,
   streamingReview,
   streamingReview as review,
 } from './streaming-orchestrator.js';
-
-// Local pre-commit review (non-streaming, simpler flow)
-export { reviewLocal } from './orchestrator.js';
 
 // Streaming validator
 export {
@@ -57,7 +54,6 @@ export type {
   // Orchestrator types
   OrchestratorOptions,
   OrchestratorInput,
-  LocalReviewInput,
   // Progress event type
   ReviewProgressEvent,
 } from './types.js';
@@ -138,20 +134,3 @@ export {
   type SpecialistContext,
   type ValidatorContext,
 } from './prompts/index.js';
-
-// Validator
-export {
-  IssueValidator,
-  createValidator,
-  type ValidatorOptions,
-  type ValidationResult as SingleValidationResult,
-  type ValidationProgressCallback,
-} from './validator.js';
-
-// Deduplicator
-export {
-  IssueDeduplicator,
-  createDeduplicator,
-  type DeduplicatorOptions,
-  type DeduplicationResult,
-} from './deduplicator.js';

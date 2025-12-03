@@ -10,13 +10,7 @@ import { initializeEnv } from './config/env.js';
 // Initialize environment variables for Claude Agent SDK
 initializeEnv();
 
-import { getDiff } from './git/diff.js';
-import { GitError } from './git/type.js';
-import { parseDiff } from './git/parser.js';
-import { getPRCommits } from './git/commits.js';
-import { createDiffAnalyzer } from './analyzer/index.js';
-import { analyzeIntent, filterCommits } from './intent/index.js';
-import { review, reviewLocal, formatReport } from './review/index.js';
+import { review, formatReport } from './review/index.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
 
 /**
@@ -27,12 +21,10 @@ function printUsage(): void {
 Usage: argus <command> [options]
 
 Commands:
-  analyze <repo> <source> <target>   Run diff analysis and intent detection
-  review <repo> <source> <target>    Run full AI code review with multiple agents
-  pre-commit                         Review local uncommitted changes (pre-commit hook)
+  review <repo> <source> <target>    Run AI code review with multiple agents
   config                             Manage configuration (API key, base URL, model)
 
-Arguments (for analyze/review):
+Arguments (for review):
   repo          Path to the git repository
   source        Source branch name (will use origin/<source>)
   target        Target branch name (will use origin/<target>)
@@ -45,14 +37,6 @@ Options (review command):
   --rules-dir=<path>   Custom review rules directory
   --agents-dir=<path>  Custom agent definitions directory
   --skip-validation    Skip issue validation (faster but less accurate)
-  --incremental        Enable incremental review (only review new commits)
-  --reset-state        Reset review state and force full review
-  --verbose            Enable verbose output
-
-Options (pre-commit command):
-  --json-logs          Output as JSON event stream (for service integration)
-  --language=<lang>    Output language: zh (default) | en
-  --validate           Enable issue validation (disabled by default for speed)
   --verbose            Enable verbose output
 
 Config subcommands:
@@ -73,8 +57,6 @@ Examples:
   argus config list
   argus review /path/to/repo feature-branch main
   argus review /path/to/repo feature-branch main --json-logs
-  argus pre-commit                    # Review local changes (fast, no validation)
-  argus pre-commit --validate         # Review with issue validation
 `);
 }
 
@@ -264,9 +246,6 @@ function parseOptions(args: string[]): {
   rulesDirs: string[];
   customAgentsDirs: string[];
   skipValidation: boolean;
-  validate: boolean;
-  incremental: boolean;
-  resetState: boolean;
   jsonLogs: boolean;
   verbose: boolean;
 } {
@@ -276,9 +255,6 @@ function parseOptions(args: string[]): {
     rulesDirs: [] as string[],
     customAgentsDirs: [] as string[],
     skipValidation: false,
-    validate: false,
-    incremental: false,
-    resetState: false,
     jsonLogs: false,
     verbose: false,
   };
@@ -306,12 +282,6 @@ function parseOptions(args: string[]): {
       }
     } else if (arg === '--skip-validation') {
       options.skipValidation = true;
-    } else if (arg === '--validate') {
-      options.validate = true;
-    } else if (arg === '--incremental') {
-      options.incremental = true;
-    } else if (arg === '--reset-state') {
-      options.resetState = true;
     } else if (arg === '--json-logs') {
       options.jsonLogs = true;
     } else if (arg === '--verbose') {
@@ -323,13 +293,6 @@ function parseOptions(args: string[]): {
   for (const configDir of options.configDirs) {
     options.rulesDirs.push(`${configDir}/rules`);
     options.customAgentsDirs.push(`${configDir}/agents`);
-  }
-
-  // Warn about conflicting options
-  if (options.incremental && options.resetState) {
-    console.warn(
-      'Warning: --reset-state will clear previous review state before running incremental review'
-    );
   }
 
   return options;
@@ -354,14 +317,13 @@ async function runReviewCommand(
       options.customAgentsDirs.length > 0
         ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
         : '';
-    const modeInfo = options.incremental ? 'Mode:          Incremental' : '';
 
     console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${repoPath}
 Source Branch: ${sourceBranch}
-Target Branch: ${targetBranch}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
+Target Branch: ${targetBranch}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
   }
@@ -373,8 +335,6 @@ Target Branch: ${targetBranch}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
-      incremental: options.incremental,
-      resetState: options.resetState,
       rulesDirs: options.rulesDirs,
       customAgentsDirs: options.customAgentsDirs,
       // Use JSON logs mode if specified, otherwise auto-detect
@@ -394,54 +354,6 @@ Target Branch: ${targetBranch}${modeInfo ? '\n' + modeInfo : ''}${configInfo ? '
     process.stderr.write(JSON.stringify(reportEvent) + '\n');
   } else {
     // In normal mode, output formatted markdown report
-    const formatted = formatReport(report, {
-      format: 'markdown',
-      language: options.language,
-    });
-    console.log(formatted);
-  }
-}
-
-/**
- * Run the pre-commit command (local review)
- */
-async function runPreCommitCommand(options: ReturnType<typeof parseOptions>): Promise<void> {
-  const repoPath = process.cwd();
-
-  // In JSON logs mode, skip the banner
-  if (!options.jsonLogs) {
-    console.log(`
-@argus/core - Pre-commit Review
-=================================
-Repository:    ${repoPath}
-Mode:          Local (git diff HEAD)
-=================================
-`);
-  }
-
-  // Pre-commit defaults to skip validation for speed
-  // Use --validate to enable validation
-  const skipValidation = !options.validate;
-
-  const report = await reviewLocal({
-    repoPath,
-    options: {
-      verbose: options.verbose,
-      skipValidation,
-      progressMode: options.jsonLogs ? 'json' : 'auto',
-    },
-  });
-
-  if (options.jsonLogs) {
-    const reportEvent = {
-      type: 'report',
-      data: {
-        report,
-        timestamp: new Date().toISOString(),
-      },
-    };
-    process.stderr.write(JSON.stringify(reportEvent) + '\n');
-  } else {
     const formatted = formatReport(report, {
       format: 'markdown',
       language: options.language,
@@ -475,11 +387,29 @@ export async function main(): Promise<void> {
     return;
   }
 
-  // Handle pre-commit command
-  if (firstArg === 'pre-commit') {
-    const options = parseOptions(args.slice(1));
+  // Handle review command
+  if (firstArg === 'review') {
+    if (args.length < 4) {
+      console.error('Error: review command requires <repo> <source> <target>\n');
+      printUsage();
+      process.exit(1);
+    }
+
+    const repoPath = args[1] ?? '';
+    const sourceBranch = args[2] ?? '';
+    const targetBranch = args[3] ?? '';
+    const optionArgs = args.slice(4);
+
+    // Validate arguments are not empty
+    if (!repoPath || !sourceBranch || !targetBranch) {
+      console.error('Error: All arguments must be non-empty\n');
+      printUsage();
+      process.exit(1);
+    }
+
     try {
-      await runPreCommitCommand(options);
+      const options = parseOptions(optionArgs);
+      await runReviewCommand(repoPath, sourceBranch, targetBranch, options);
     } catch (error) {
       if (error instanceof Error) {
         console.error(`\nError: ${error.message}`);
@@ -491,260 +421,10 @@ export async function main(): Promise<void> {
     return;
   }
 
-  // For analyze/review commands, check for minimum arguments
-  if (args.length < 3 && firstArg !== 'analyze' && firstArg !== 'review') {
-    // Legacy mode with too few args
-    console.error('Error: Invalid number of arguments\n');
-    printUsage();
-    process.exit(1);
-  }
-
-  if ((firstArg === 'analyze' || firstArg === 'review') && args.length < 4) {
-    console.error(`Error: ${firstArg} command requires <repo> <source> <target>\n`);
-    printUsage();
-    process.exit(1);
-  }
-
-  let command = 'analyze';
-  let repoPath: string;
-  let sourceBranch: string;
-  let targetBranch: string;
-  let optionArgs: string[];
-
-  if (firstArg === 'analyze' || firstArg === 'review') {
-    command = firstArg;
-    repoPath = args[1] ?? '';
-    sourceBranch = args[2] ?? '';
-    targetBranch = args[3] ?? '';
-    optionArgs = args.slice(4);
-  } else {
-    // Legacy mode: no command specified, default to analyze
-    repoPath = args[0] ?? '';
-    sourceBranch = args[1] ?? '';
-    targetBranch = args[2] ?? '';
-    optionArgs = args.slice(3);
-  }
-
-  // Validate arguments are not empty
-  if (!repoPath || !sourceBranch || !targetBranch) {
-    console.error('Error: All arguments must be non-empty\n');
-    printUsage();
-    process.exit(1);
-  }
-
-  try {
-    // Handle review command
-    if (command === 'review') {
-      const options = parseOptions(optionArgs);
-      await runReviewCommand(repoPath, sourceBranch, targetBranch, options);
-      return;
-    }
-
-    // Default: analyze command
-    const remote = 'origin'; // Default remote
-    console.log(`
-@argus/core - Git Diff Extraction
-=================================
-Repository:    ${repoPath}
-Source Branch: ${sourceBranch} (using ${remote}/${sourceBranch})
-Target Branch: ${targetBranch} (using ${remote}/${targetBranch})
-Diff Command:  git diff ${remote}/${targetBranch}...${remote}/${sourceBranch}
-=================================
-`);
-
-    // Get the raw diff
-    const rawDiff = getDiff(repoPath, sourceBranch, targetBranch);
-
-    if (!rawDiff.trim()) {
-      console.log('No differences found between the branches.');
-      return;
-    }
-
-    // Parse and categorize the diff
-    console.log('Parsing and categorizing diff files...\n');
-    const files = parseDiff(rawDiff);
-
-    // Summary statistics
-    const summary = files.reduce(
-      (acc, file) => {
-        acc[file.category] = (acc[file.category] || 0) + 1;
-        return acc;
-      },
-      {} as Record<string, number>
-    );
-
-    console.log(`Parsed ${files.length} file(s):`);
-    console.log('=================================');
-    console.log('Category Summary:');
-    for (const [category, count] of Object.entries(summary)) {
-      console.log(`  ${category.padEnd(12)}: ${count} file(s)`);
-    }
-    console.log('=================================\n');
-
-    // Analyze with LLM
-    console.log('Analyzing changes with LLM...\n');
-    const analyzer = createDiffAnalyzer();
-    const result = await analyzer.analyze(files);
-
-    // Output analysis results
-    console.log('=================================');
-    console.log('Analysis Results:');
-    console.log('=================================\n');
-
-    // Group by risk level
-    const highRisk = result.changes.filter((c) => c.risk_level === 'HIGH');
-    const mediumRisk = result.changes.filter((c) => c.risk_level === 'MEDIUM');
-    const lowRisk = result.changes.filter((c) => c.risk_level === 'LOW');
-
-    if (highRisk.length > 0) {
-      console.log('🔴 HIGH RISK:');
-      for (const change of highRisk) {
-        console.log(`  - ${change.file_path}`);
-        const hints = change.semantic_hints;
-
-        // Show changed interfaces
-        if (hints.interfaces?.length) {
-          for (const iface of hints.interfaces) {
-            console.log(`    [Interface] ${iface.name}`);
-            if (iface.added_fields?.length) {
-              console.log(`      + added: ${iface.added_fields.join(', ')}`);
-            }
-            if (iface.removed_fields?.length) {
-              console.log(`      - removed: ${iface.removed_fields.join(', ')}`);
-            }
-          }
-        }
-
-        // Show changed functions
-        if (hints.functions?.length) {
-          for (const func of hints.functions) {
-            const exported = func.is_exported ? ' (exported)' : '';
-            console.log(`    [Function] ${func.name} - ${func.change_type}${exported}`);
-            if (func.added_params?.length) {
-              console.log(`      + params: ${func.added_params.join(', ')}`);
-            }
-            if (func.removed_params?.length) {
-              console.log(`      - params: ${func.removed_params.join(', ')}`);
-            }
-          }
-        }
-
-        // Show summary if no details
-        if (!hints.interfaces?.length && !hints.functions?.length && hints.summary) {
-          console.log(`    → ${hints.summary}`);
-        }
-      }
-      console.log();
-    }
-
-    if (mediumRisk.length > 0) {
-      console.log('🟡 MEDIUM RISK:');
-      for (const change of mediumRisk) {
-        console.log(`  - ${change.file_path}`);
-        if (change.semantic_hints.summary) {
-          console.log(`    → ${change.semantic_hints.summary}`);
-        }
-      }
-      console.log();
-    }
-
-    if (lowRisk.length > 0) {
-      console.log('🟢 LOW RISK:');
-      for (const change of lowRisk) {
-        console.log(`  - ${change.file_path}`);
-        if (change.semantic_hints.summary) {
-          console.log(`    → ${change.semantic_hints.summary}`);
-        }
-      }
-      console.log();
-    }
-
-    // Metadata
-    console.log('=================================');
-    console.log('Diff Analysis Metadata:');
-    console.log('=================================');
-    console.log(`  Total files:    ${result.metadata.total_files}`);
-    console.log(`  Analyzed:       ${result.metadata.analyzed_files}`);
-    console.log(`  Skipped:        ${result.metadata.skipped_files}`);
-    console.log(`  Batches:        ${result.metadata.batches}`);
-    console.log(`  Tokens used:    ${result.metadata.total_tokens}`);
-
-    // Get PR commits
-    console.log('\n=================================');
-    console.log('Fetching PR Commits...');
-    console.log('=================================\n');
-
-    const commits = getPRCommits(repoPath, sourceBranch, targetBranch, remote);
-    const filterResult = filterCommits(commits);
-
-    console.log(`Total commits: ${filterResult.stats.total}`);
-    console.log(`  Valid:   ${filterResult.stats.valid}`);
-    console.log(`  Reverts: ${filterResult.stats.reverts}`);
-    console.log(`  Vague:   ${filterResult.stats.vague}`);
-    console.log(`  Merges:  ${filterResult.stats.merges}`);
-
-    if (filterResult.valid.length > 0) {
-      console.log('\nValid commits:');
-      for (const commit of filterResult.valid) {
-        console.log(`  - ${commit.subject}`);
-      }
-    }
-
-    if (filterResult.excluded.length > 0) {
-      console.log('\nExcluded commits:');
-      for (const commit of filterResult.excluded) {
-        console.log(`  - [${commit.excludeReason}] ${commit.subject}`);
-      }
-    }
-
-    // Intent Analysis
-    console.log('\n=================================');
-    console.log('Analyzing PR Intent...');
-    console.log('=================================\n');
-
-    const intent = await analyzeIntent(commits, result, filterResult);
-
-    // Display intent analysis
-    console.log('📋 Intent Analysis:');
-    console.log('=================================\n');
-
-    console.log(`🎯 Primary Goal: ${intent.primary_goal}\n`);
-
-    console.log('📝 Summary:');
-    console.log(`${intent.summary}\n`);
-
-    if (intent.change_categories.length > 0) {
-      console.log(`🏷️  Categories: ${intent.change_categories.join(', ')}`);
-    }
-
-    console.log(`📊 Confidence: ${intent.confidence}`);
-
-    console.log('\n=================================');
-    console.log('Intent Metadata:');
-    console.log('=================================');
-    console.log(`  Total commits:    ${intent.metadata.total_commits}`);
-    console.log(`  Valid commits:    ${intent.metadata.valid_commits}`);
-    console.log(`  Excluded commits: ${intent.metadata.excluded_commits}`);
-    console.log(`  Tokens used:      ${intent.metadata.tokens_used}`);
-
-    // Output full JSON for debugging
-    console.log('\n=================================');
-    console.log('Full Analysis (JSON):');
-    console.log('=================================');
-    console.log(JSON.stringify({ diffAnalysis: result, intentAnalysis: intent }, null, 2));
-  } catch (error) {
-    if (error instanceof GitError) {
-      console.error(`\nGit Error: ${error.message}`);
-      if (error.stderr) {
-        console.error(`Details: ${error.stderr}`);
-      }
-      process.exit(1);
-    }
-
-    // Unexpected error
-    console.error('\nUnexpected error:', error);
-    process.exit(1);
-  }
+  // Unknown command
+  console.error(`Error: Unknown command "${firstArg}"\n`);
+  printUsage();
+  process.exit(1);
 }
 
 // Run CLI

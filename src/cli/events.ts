@@ -14,7 +14,6 @@ export interface ReviewStartData {
   repoPath: string;
   sourceBranch: string;
   targetBranch: string;
-  incremental: boolean;
   agents: AgentType[];
   timestamp: string;
 }

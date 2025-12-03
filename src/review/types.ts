@@ -403,16 +403,6 @@ export interface OrchestratorOptions {
    */
   disableCustomAgentLLM?: boolean;
   /**
-   * Enable incremental review mode (default: false)
-   * When enabled, only review changes since the last reviewed commit
-   */
-  incremental?: boolean;
-  /**
-   * Reset review state before running (default: false)
-   * Forces a full review and clears the previous state
-   */
-  resetState?: boolean;
-  /**
    * Progress output mode (default: 'auto')
    * - 'auto': TTY mode (spinner, colors) if TTY, silent otherwise
    * - 'tty': Force TTY mode (spinner, colors)
@@ -446,16 +436,6 @@ export interface OrchestratorInput {
   targetBranch: string;
   /** Repository path */
   repoPath: string;
-  /** Options */
-  options?: OrchestratorOptions;
-}
-
-/**
- * Input for local pre-commit review
- */
-export interface LocalReviewInput {
-  /** Repository path (defaults to current directory) */
-  repoPath?: string;
   /** Options */
   options?: OrchestratorOptions;
 }

@@ -365,15 +365,13 @@ export class StructuredProgressPrinter implements IProgressPrinter {
     repoPath: string,
     sourceBranch: string,
     targetBranch: string,
-    agents: AgentType[],
-    incremental: boolean = false
+    agents: AgentType[]
   ): void {
     this.startTime = Date.now();
     this.emitter.reviewStart({
       repoPath,
       sourceBranch,
       targetBranch,
-      incremental,
       agents,
     });
   }

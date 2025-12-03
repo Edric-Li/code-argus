@@ -75,8 +75,6 @@ const DEFAULT_OPTIONS: Required<Omit<OrchestratorOptions, 'onEvent'>> & {
   rulesDirs: [],
   customAgentsDirs: [],
   disableCustomAgentLLM: false,
-  incremental: false,
-  resetState: false,
   progressMode: 'auto',
   onEvent: undefined,
 };
