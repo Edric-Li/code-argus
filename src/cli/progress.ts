@@ -21,6 +21,27 @@ export interface ProgressPrinterOptions {
 export type ValidationStatusType = 'confirmed' | 'rejected' | 'uncertain' | 'pending';
 
 /**
+ * Issue info for validation events (contains all fields needed for JSON output)
+ */
+export interface ValidatedIssueInfo {
+  title: string;
+  file: string;
+  line?: number;
+  severity: string;
+  description?: string;
+  suggestion?: string;
+  status: ValidationStatusType;
+  reason?: string;
+}
+
+/**
+ * Issue info for auto-rejected events
+ */
+export type AutoRejectedIssueInfo = Omit<ValidatedIssueInfo, 'status'> & {
+  reason: string; // reason is required for auto-rejected
+};
+
+/**
  * Progress printer interface (for null object pattern)
  */
 export interface IProgressPrinter {
@@ -47,8 +68,8 @@ export interface IProgressPrinter {
     description?: string,
     suggestion?: string
   ): void;
-  issueValidated(title: string, status: ValidationStatusType, reason?: string): void;
-  autoRejected(title: string, reason: string): void;
+  issueValidated(issue: ValidatedIssueInfo): void;
+  autoRejected(issue: AutoRejectedIssueInfo): void;
   validationRound(
     title: string,
     round: number,
@@ -344,8 +365,9 @@ export class ProgressPrinter implements IProgressPrinter {
   /**
    * Print issue validation completed
    */
-  issueValidated(title: string, status: ValidationStatusType, reason?: string): void {
+  issueValidated(issue: ValidatedIssueInfo): void {
     this.stopSpinner();
+    const { title, status, reason } = issue;
     const icon =
       status === 'confirmed'
         ? this.c('green', '✅')
@@ -365,8 +387,9 @@ export class ProgressPrinter implements IProgressPrinter {
   /**
    * Print auto-rejected issue
    */
-  autoRejected(title: string, reason: string): void {
+  autoRejected(issue: AutoRejectedIssueInfo): void {
     this.stopSpinner();
+    const { title, reason } = issue;
     console.log(`      ${this.c('gray', '⏭️')} ${title} ${this.c('gray', `(${reason})`)}`);
   }
 

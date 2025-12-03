@@ -333,10 +333,27 @@ export class StreamingReviewOrchestrator {
                   issue.validation_status === 'rejected'
                     ? issue.rejection_reason || issue.grounding_evidence?.reasoning
                     : undefined;
-                this.progress.issueValidated(issue.title, issue.validation_status, reason);
+                this.progress.issueValidated({
+                  title: issue.title,
+                  file: issue.file,
+                  line: issue.line_start,
+                  severity: issue.severity,
+                  description: issue.description,
+                  suggestion: issue.suggestion,
+                  status: issue.validation_status,
+                  reason,
+                });
               },
               onAutoRejected: (issue, reason) => {
-                this.progress.autoRejected(issue.title, reason);
+                this.progress.autoRejected({
+                  title: issue.title,
+                  file: issue.file,
+                  line: issue.line_start,
+                  severity: issue.severity,
+                  description: issue.description,
+                  suggestion: issue.suggestion,
+                  reason,
+                });
               },
               onRoundComplete: (_issueId, issueTitle, round, maxRounds, status) => {
                 this.progress.validationRound(issueTitle, round, maxRounds, status);

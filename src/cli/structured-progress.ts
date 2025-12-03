@@ -8,7 +8,12 @@
  * need to parse and track review progress programmatically.
  */
 
-import type { IProgressPrinter, ValidationStatusType } from './progress.js';
+import type {
+  IProgressPrinter,
+  ValidationStatusType,
+  ValidatedIssueInfo,
+  AutoRejectedIssueInfo,
+} from './progress.js';
 import {
   ReviewEventEmitter,
   type ReviewEvent,
@@ -272,7 +277,7 @@ export class StructuredProgressPrinter implements IProgressPrinter {
     );
   }
 
-  issueValidated(title: string, status: ValidationStatusType, reason?: string): void {
+  issueValidated(issue: ValidatedIssueInfo): void {
     // Map ValidationStatusType to our status
     const statusMap: Record<
       ValidationStatusType,
@@ -285,23 +290,33 @@ export class StructuredProgressPrinter implements IProgressPrinter {
     };
 
     this.emitter.validationIssue(
-      this.generateIssueId(title),
-      title,
-      '', // file not available here
-      '', // severity not available here
-      statusMap[status],
-      reason
+      this.generateIssueId(issue.title, issue.file),
+      issue.title,
+      issue.file,
+      issue.severity,
+      statusMap[issue.status],
+      issue.reason,
+      undefined, // round
+      undefined, // maxRounds
+      issue.line,
+      issue.description,
+      issue.suggestion
     );
   }
 
-  autoRejected(title: string, reason: string): void {
+  autoRejected(issue: AutoRejectedIssueInfo): void {
     this.emitter.validationIssue(
-      this.generateIssueId(title),
-      title,
-      '',
-      '',
+      this.generateIssueId(issue.title, issue.file),
+      issue.title,
+      issue.file,
+      issue.severity,
       'auto_rejected',
-      reason
+      issue.reason,
+      undefined, // round
+      undefined, // maxRounds
+      issue.line,
+      issue.description,
+      issue.suggestion
     );
   }
 
@@ -483,13 +498,13 @@ export function createDualProgressPrinter(
       ttyPrinter.issueDiscovered(title, file, severity, line, description, suggestion);
       structured.issueDiscovered(title, file, severity, line, description, suggestion);
     },
-    issueValidated: (title, status, reason) => {
-      ttyPrinter.issueValidated(title, status, reason);
-      structured.issueValidated(title, status, reason);
+    issueValidated: (issue) => {
+      ttyPrinter.issueValidated(issue);
+      structured.issueValidated(issue);
     },
-    autoRejected: (title, reason) => {
-      ttyPrinter.autoRejected(title, reason);
-      structured.autoRejected(title, reason);
+    autoRejected: (issue) => {
+      ttyPrinter.autoRejected(issue);
+      structured.autoRejected(issue);
     },
     validationRound: (title, round, maxRounds, status) => {
       ttyPrinter.validationRound(title, round, maxRounds, status);
