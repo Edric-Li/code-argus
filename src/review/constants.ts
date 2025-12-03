@@ -36,6 +36,35 @@ export const DEFAULT_VALIDATOR_MAX_TURNS = 30;
 export const DEFAULT_AGENT_MAX_TURNS = 30;
 
 /**
+ * 根据 diff 大小计算推荐的 maxTurns
+ *
+ * 公式：基础轮数 + (文件数 * 每文件轮数)
+ * - 基础轮数：10（初始分析 + 总结）
+ * - 每文件轮数：5（读取上下文 + 报告问题）
+ * - 最小值：15
+ * - 最大值：200
+ *
+ * 示例：
+ * - 1 文件: 10 + 5 = 15 轮
+ * - 10 文件: 10 + 50 = 60 轮
+ * - 38+ 文件: 200 轮 (封顶)
+ */
+export function getRecommendedMaxTurns(fileCount: number): number {
+  const BASE_TURNS = 10;
+  const TURNS_PER_FILE = 5;
+  const MIN_TURNS = 15;
+  const MAX_TURNS = 200;
+
+  // 验证输入：处理负数、NaN、Infinity 等无效值
+  if (!Number.isFinite(fileCount) || fileCount < 0) {
+    return MIN_TURNS;
+  }
+
+  const calculated = BASE_TURNS + fileCount * TURNS_PER_FILE;
+  return Math.max(MIN_TURNS, Math.min(MAX_TURNS, calculated));
+}
+
+/**
  * 验证的最低置信度阈值（旧版，请使用 getMinConfidenceForValidation 代替）
  * 低于此阈值的问题将自动拒绝，不进行验证
  * @deprecated 请使用 getMinConfidenceForValidation(severity) 获取动态阈值

@@ -38,7 +38,7 @@ import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
-import { DEFAULT_AGENT_MODEL } from './constants.js';
+import { DEFAULT_AGENT_MODEL, getRecommendedMaxTurns } from './constants.js';
 import { createProgressPrinterWithMode, type IProgressPrinter } from '../cli/index.js';
 import type { ReviewEvent, ReviewStateSnapshot, ReviewEventEmitter } from '../cli/events.js';
 import {
@@ -349,100 +349,113 @@ export class StreamingReviewOrchestrator {
             },
           });
 
-      // Phase 2: Run specialist agents with streaming issue reporting
-      this.progress.phase(2, 4, `运行 ${agentsToRun.length} 个 Agents...`);
+      // Phase 2: Run ALL agents in parallel (built-in + custom)
+      const totalAgentCount = agentsToRun.length + triggeredCustomAgents.length;
+      this.progress.phase(2, 4, `运行 ${totalAgentCount} 个 Agents (并行)...`);
       if (this.options.verbose) {
-        console.log('[StreamingOrchestrator] Running specialist agents with streaming...');
+        console.log(
+          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom)...`
+        );
       }
 
-      const { checklists, tokens: agentTokens } = await this.runAgentsWithStreaming(
-        context,
-        reviewRepoPath,
-        agentsToRun
-      );
+      // Show custom agents starting (built-in agents are shown in runAgentsWithStreaming)
+      for (const agent of triggeredCustomAgents) {
+        this.progress.agent(agent.name, 'running');
+      }
+
+      // Build file analyses summary for custom agents
+      const fileAnalysesSummary = context.fileAnalyses
+        .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
+        .join('\n');
+
+      // Run built-in agents and custom agents IN PARALLEL
+      // Use Promise.allSettled to ensure both complete even if one fails
+      const [builtInSettled, customSettled] = await Promise.allSettled([
+        // Built-in agents
+        this.runAgentsWithStreaming(context, reviewRepoPath, agentsToRun),
+        // Custom agents (returns empty array if none triggered)
+        triggeredCustomAgents.length > 0
+          ? executeCustomAgents(
+              triggeredCustomAgents,
+              {
+                verbose: this.options.verbose,
+                repoPath: reviewRepoPath,
+                diffContent: context.diff.diff,
+                fileAnalysesSummary,
+                standardsText: standardsToText(context.standards),
+              },
+              {
+                onAgentStart: () => {
+                  // No-op: progress is handled elsewhere
+                },
+                onAgentComplete: (agent, result) => {
+                  const elapsed = result.execution_time_ms;
+                  const elapsedStr =
+                    elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`;
+                  this.progress.agent(
+                    agent.name,
+                    'completed',
+                    `${result.issues.length} issues, ${elapsedStr}`
+                  );
+                },
+                onAgentError: (agent, error) => {
+                  this.progress.agent(agent.name, 'error', error.message);
+                },
+                onIssueDiscovered: (issue) => {
+                  // Enqueue custom agent issues for validation
+                  if (!this.options.skipValidation && this.streamingValidator) {
+                    const autoRejected = this.streamingValidator.enqueue(issue);
+                    if (autoRejected) {
+                      this.autoRejectedIssues.push(autoRejected);
+                    }
+                  } else if (this.options.skipValidation) {
+                    this.progress.issueDiscovered(
+                      issue.title,
+                      issue.file,
+                      issue.severity,
+                      issue.line_start,
+                      issue.description,
+                      issue.suggestion
+                    );
+                    this.rawIssuesForSkipMode.push(issue);
+                  }
+                },
+              },
+              this.options.maxConcurrency
+            )
+          : Promise.resolve([] as CustomAgentResult[]),
+      ]);
+
+      // Handle built-in agents result (required - throw if failed)
+      if (builtInSettled.status === 'rejected') {
+        throw builtInSettled.reason;
+      }
+      const builtInResult = builtInSettled.value;
+
+      // Handle custom agents result (optional - log error and continue)
+      let customAgentResults: CustomAgentResult[] = [];
+      if (customSettled.status === 'rejected') {
+        console.error('[StreamingOrchestrator] Custom agents failed:', customSettled.reason);
+        this.progress.warn('自定义 Agents 执行失败，继续处理内置 Agents 结果');
+      } else {
+        customAgentResults = customSettled.value;
+      }
+
+      // Collect results from built-in agents
+      const { checklists, tokens: agentTokens } = builtInResult;
       tokensUsed += agentTokens;
 
-      // Run custom agents if any were triggered
-      let customAgentResults: CustomAgentResult[] = [];
-      if (triggeredCustomAgents.length > 0) {
-        this.progress.progress(`运行 ${triggeredCustomAgents.length} 个自定义 Agents...`);
-        if (this.options.verbose) {
-          console.log(
-            `[StreamingOrchestrator] Running ${triggeredCustomAgents.length} custom agents...`
-          );
-        }
-
-        // Show custom agents starting
-        for (const agent of triggeredCustomAgents) {
-          this.progress.agent(agent.name, 'running');
-        }
-
-        // Build file analyses summary for custom agents
-        const fileAnalysesSummary = context.fileAnalyses
-          .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
-          .join('\n');
-
-        customAgentResults = await executeCustomAgents(
-          triggeredCustomAgents,
-          {
-            verbose: this.options.verbose,
-            repoPath: reviewRepoPath,
-            diffContent: context.diff.diff,
-            fileAnalysesSummary,
-            standardsText: standardsToText(context.standards),
-          },
-          {
-            onAgentStart: () => {
-              // No-op: progress is handled elsewhere
-            },
-            onAgentComplete: (agent, result) => {
-              const elapsed = result.execution_time_ms;
-              const elapsedStr =
-                elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`;
-              this.progress.agent(
-                agent.name,
-                'completed',
-                `${result.issues.length} issues, ${elapsedStr}`
-              );
-            },
-            onAgentError: (agent, error) => {
-              this.progress.agent(agent.name, 'error', error.message);
-            },
-            onIssueDiscovered: (issue) => {
-              // Enqueue custom agent issues for validation
-              // This will trigger the streaming validator's onIssueDiscovered callback
-              // which handles CLI progress output
-              if (!this.options.skipValidation && this.streamingValidator) {
-                const autoRejected = this.streamingValidator.enqueue(issue);
-                if (autoRejected) {
-                  this.autoRejectedIssues.push(autoRejected);
-                }
-              } else if (this.options.skipValidation) {
-                // When skipping validation, we need to print the issue here
-                // since enqueue() won't be called
-                this.progress.issueDiscovered(
-                  issue.title,
-                  issue.file,
-                  issue.severity,
-                  issue.line_start,
-                  issue.description,
-                  issue.suggestion
-                );
-                this.rawIssuesForSkipMode.push(issue);
-              }
-            },
-          },
-          this.options.maxConcurrency
-        );
-
-        // Sum up tokens from custom agents
+      // Collect results from custom agents
+      if (customAgentResults.length > 0) {
         const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
         tokensUsed += customAgentTokens;
 
         const totalCustomIssues = customAgentResults.reduce((sum, r) => sum + r.issues.length, 0);
-        this.progress.success(
-          `自定义 Agents 完成: ${totalCustomIssues} 个问题, ${customAgentTokens} tokens`
-        );
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Custom agents completed: ${totalCustomIssues} issues, ${customAgentTokens} tokens`
+          );
+        }
       }
 
       // Phase 3: Wait for all validations to complete
@@ -650,6 +663,16 @@ export class StreamingReviewOrchestrator {
     let totalTokens = 0;
     const allChecklists: ChecklistItem[] = [];
 
+    // Calculate dynamic maxTurns based on diff size
+    const fileCount = context.diffFiles?.length ?? 0;
+    const dynamicMaxTurns = getRecommendedMaxTurns(fileCount);
+
+    if (this.options.verbose) {
+      console.log(
+        `[StreamingOrchestrator] Dynamic maxTurns: ${dynamicMaxTurns} (${fileCount} files)`
+      );
+    }
+
     // Build filter maps for style-reviewer (from parsed diff files)
     const diffFiles = context.diffFiles;
     let changedLinesByFile: Map<string, Set<number>> | undefined;
@@ -705,7 +728,8 @@ export class StreamingReviewOrchestrator {
           context,
           standardsText,
           mcpServer,
-          reviewRepoPath
+          reviewRepoPath,
+          dynamicMaxTurns
         );
         const elapsed = Date.now() - startTime;
 
@@ -947,7 +971,8 @@ Write all text (title, description, suggestion) in Chinese.`,
     context: ReviewContext,
     standardsText: string,
     mcpServerFactory: (agentType: AgentType) => ReturnType<typeof createSdkMcpServer>,
-    reviewRepoPath: string
+    reviewRepoPath: string,
+    maxTurns: number = 30
   ): Promise<{ tokensUsed: number; checklists: ChecklistItem[] }> {
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Starting agent: ${agentType}`);
@@ -986,7 +1011,7 @@ Write all text (title, description, suggestion) in Chinese.`,
           cwd: reviewRepoPath,
           permissionMode: 'bypassPermissions',
           allowDangerouslySkipPermissions: true,
-          maxTurns: 30, // More turns since we're making tool calls
+          maxTurns, // Dynamic based on diff size
           model: DEFAULT_AGENT_MODEL,
           settingSources: ['project'], // Load CLAUDE.md from repo
           mcpServers: {
