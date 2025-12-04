@@ -9,15 +9,16 @@
 export const DEFAULT_AGENT_MODEL = 'claude-opus-4-5-20251101';
 
 /**
- * 去重的默认模型（验证后批量去重）
+ * 轻量级任务的默认模型
+ * 用于 Agent 选择、自定义 Agent 匹配等简单分类任务
  */
-export const DEFAULT_DEDUP_MODEL = 'claude-opus-4-5-20251101';
+export const DEFAULT_LIGHT_MODEL = 'claude-sonnet-4-5-20250929';
 
 /**
  * 实时去重的默认模型
  * 使用 Haiku 以提高速度和成本效率，因为每个重叠问题都会运行
  */
-export const DEFAULT_REALTIME_DEDUP_MODEL = 'claude-3-5-haiku-20241022';
+export const DEFAULT_REALTIME_DEDUP_MODEL = 'claude-haiku-4-5-20251001';
 
 /**
  * Agent 的最大思考 token 数（0 = 禁用扩展思考）
@@ -47,13 +48,13 @@ export const DEFAULT_AGENT_MAX_TURNS = 30;
  * 示例：
  * - 1 文件: 10 + 5 = 15 轮
  * - 10 文件: 10 + 50 = 60 轮
- * - 38+ 文件: 200 轮 (封顶)
+ * - 98+ 文件: 500 轮 (封顶)
  */
 export function getRecommendedMaxTurns(fileCount: number): number {
   const BASE_TURNS = 10;
   const TURNS_PER_FILE = 5;
   const MIN_TURNS = 15;
-  const MAX_TURNS = 200;
+  const MAX_TURNS = 500;
 
   // 验证输入：处理负数、NaN、Infinity 等无效值
   if (!Number.isFinite(fileCount) || fileCount < 0) {
