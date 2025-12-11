@@ -10,7 +10,8 @@ import { initializeEnv } from './config/env.js';
 // Initialize environment variables for Claude Agent SDK
 initializeEnv();
 
-import { review, formatReport } from './review/index.js';
+import { reviewByRefs, formatReport } from './review/index.js';
+import { detectRefType } from './git/ref.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
 
 /**
@@ -26,8 +27,12 @@ Commands:
 
 Arguments (for review):
   repo          Path to the git repository
-  source        Source branch name (will use origin/<source>)
-  target        Target branch name (will use origin/<target>)
+  source        Source branch name or commit SHA
+  target        Target branch name or commit SHA
+
+  The tool auto-detects whether source/target are branches or commits:
+  - Branch names: Uses three-dot diff (origin/target...origin/source)
+  - Commit SHAs:  Uses two-dot diff (target..source) for incremental review
 
 Options (review command):
   --json-logs          Output as JSON event stream (for service integration)
@@ -52,11 +57,15 @@ Config keys:
   model         Model to use (e.g., claude-sonnet-4-5-20250929)
 
 Examples:
-  argus config set api-key sk-ant-xxx
-  argus config set base-url https://my-proxy.com/v1
-  argus config list
+  # Branch-based review (initial PR review)
   argus review /path/to/repo feature-branch main
+
+  # Commit-based review (incremental review)
+  argus review /path/to/repo abc1234 def5678
+
+  # With options
   argus review /path/to/repo feature-branch main --json-logs
+  argus config set api-key sk-ant-xxx
 `);
 }
 
@@ -303,10 +312,16 @@ function parseOptions(args: string[]): {
  */
 async function runReviewCommand(
   repoPath: string,
-  sourceBranch: string,
-  targetBranch: string,
+  sourceRef: string,
+  targetRef: string,
   options: ReturnType<typeof parseOptions>
 ): Promise<void> {
+  // Auto-detect ref types
+  const sourceType = detectRefType(sourceRef);
+  const targetType = detectRefType(targetRef);
+  const isIncremental = sourceType === 'commit' && targetType === 'commit';
+  const modeLabel = isIncremental ? '增量审查 (Incremental)' : '分支审查 (Branch)';
+
   // In JSON logs mode, skip the banner - all output is JSON events
   if (!options.jsonLogs) {
     const configInfo =
@@ -318,20 +333,25 @@ async function runReviewCommand(
         ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
         : '';
 
+    const sourceLabel = sourceType === 'commit' ? 'Source Commit' : 'Source Branch';
+    const targetLabel = targetType === 'commit' ? 'Target Commit' : 'Target Branch';
+
     console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${repoPath}
-Source Branch: ${sourceBranch}
-Target Branch: ${targetBranch}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
+${sourceLabel}: ${sourceRef}
+${targetLabel}: ${targetRef}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
 =================================
 `);
   }
 
-  const report = await review({
+  // Use the new reviewByRefs API which auto-detects ref types
+  const report = await reviewByRefs({
     repoPath,
-    sourceBranch,
-    targetBranch,
+    sourceRef,
+    targetRef,
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
@@ -396,12 +416,12 @@ export async function main(): Promise<void> {
     }
 
     const repoPath = args[1] ?? '';
-    const sourceBranch = args[2] ?? '';
-    const targetBranch = args[3] ?? '';
+    const sourceRef = args[2] ?? '';
+    const targetRef = args[3] ?? '';
     const optionArgs = args.slice(4);
 
     // Validate arguments are not empty
-    if (!repoPath || !sourceBranch || !targetBranch) {
+    if (!repoPath || !sourceRef || !targetRef) {
       console.error('Error: All arguments must be non-empty\n');
       printUsage();
       process.exit(1);
@@ -409,7 +429,7 @@ export async function main(): Promise<void> {
 
     try {
       const options = parseOptions(optionArgs);
-      await runReviewCommand(repoPath, sourceBranch, targetBranch, options);
+      await runReviewCommand(repoPath, sourceRef, targetRef, options);
     } catch (error) {
       if (error instanceof Error) {
         console.error(`\nError: ${error.message}`);

@@ -439,3 +439,34 @@ export interface OrchestratorInput {
   /** Options */
   options?: OrchestratorOptions;
 }
+
+/**
+ * Input for the review orchestrator with auto-detection of branches vs commits
+ *
+ * This is the preferred input type that supports both:
+ * - Branch comparison (initial PR review)
+ * - Commit comparison (incremental review)
+ *
+ * The orchestrator auto-detects whether the refs are branches or commits
+ * based on their format (7-40 hex chars = commit, otherwise = branch).
+ */
+export interface ReviewInput {
+  /** Repository path */
+  repoPath: string;
+  /** Source reference (branch name or commit SHA) */
+  sourceRef: string;
+  /** Target reference (branch name or commit SHA) */
+  targetRef: string;
+  /** Options */
+  options?: OrchestratorOptions;
+}
+
+/**
+ * Commit range information for incremental reviews
+ */
+export interface CommitRangeInfo {
+  /** Number of commits in the range */
+  count: number;
+  /** Commit messages (short format) */
+  commits: Array<{ sha: string; message: string }>;
+}

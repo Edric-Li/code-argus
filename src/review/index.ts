@@ -9,7 +9,8 @@ export {
   StreamingReviewOrchestrator,
   createStreamingOrchestrator,
   streamingReview,
-  streamingReview as review,
+  reviewByRefs,
+  review,
 } from './streaming-orchestrator.js';
 
 // Streaming validator
@@ -54,6 +55,8 @@ export type {
   // Orchestrator types
   OrchestratorOptions,
   OrchestratorInput,
+  ReviewInput,
+  CommitRangeInfo,
   // Progress event type
   ReviewProgressEvent,
 } from './types.js';

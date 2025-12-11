@@ -17,6 +17,7 @@ import type {
   ReviewReport,
   OrchestratorOptions,
   OrchestratorInput,
+  ReviewInput,
   AgentType,
   ChecklistItem,
   RawIssue,
@@ -27,11 +28,20 @@ import { aggregate } from './aggregator.js';
 import { calculateMetrics, generateReport } from './report.js';
 import {
   getDiffWithOptions,
+  getDiffByRefs,
   fetchRemote,
   createWorktreeForReview,
+  createWorktreeForRef,
   removeWorktree,
   type WorktreeInfo,
 } from '../git/diff.js';
+import {
+  detectRefType,
+  getCommitsBetween,
+  getRefDisplayString,
+  type GitRef,
+  type ReviewMode,
+} from '../git/ref.js';
 import { parseDiff, type DiffFile } from '../git/parser.js';
 import { selectAgents, type AgentSelectionResult } from './agent-selector.js';
 import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
@@ -611,6 +621,507 @@ export class StreamingReviewOrchestrator {
   }
 
   /**
+   * Execute the complete review process with auto-detection of refs
+   *
+   * This method auto-detects whether the provided refs are branches or commits,
+   * and uses the appropriate diff strategy.
+   */
+  async reviewByRefs(input: ReviewInput): Promise<ReviewReport> {
+    const startTime = Date.now();
+    let tokensUsed = 0;
+    let worktreeInfo: WorktreeInfo | null = null;
+
+    // Detect ref types
+    const sourceType = detectRefType(input.sourceRef);
+    const targetType = detectRefType(input.targetRef);
+    const isIncremental = sourceType === 'commit' && targetType === 'commit';
+
+    try {
+      // Phase 1: Build review context
+      const modeLabel = isIncremental ? '增量审查' : '分支审查';
+      this.progress.phase(1, 4, `构建${modeLabel}上下文...`);
+      if (this.options.verbose) {
+        console.log(
+          `[StreamingOrchestrator] Building review context (mode: ${isIncremental ? 'incremental' : 'branch'})...`
+        );
+      }
+
+      const { context, diffFiles, sourceRef, targetRef } = await this.buildContextByRefs(input);
+
+      // Show review mode info
+      if (isIncremental) {
+        const commitRange = getCommitsBetween(input.repoPath, input.targetRef, input.sourceRef);
+        const sourceDisplay = getRefDisplayString(sourceRef, input.repoPath);
+        const targetDisplay = getRefDisplayString(targetRef, input.repoPath);
+        this.progress.info(
+          `增量审查: ${targetDisplay} → ${sourceDisplay} (${commitRange.length} commits)`
+        );
+      }
+
+      // Load custom rules if specified
+      if (this.options.rulesDirs.length > 0) {
+        this.progress.progress('加载自定义规则...');
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Loading rules from: ${this.options.rulesDirs.join(', ')}`
+          );
+        }
+        this.rulesConfig = await loadRules(this.options.rulesDirs, {
+          verbose: this.options.verbose,
+        });
+
+        if (!isEmptyRules(this.rulesConfig)) {
+          const agentCount = Object.keys(this.rulesConfig.agents).length;
+          const hasGlobal = this.rulesConfig.global ? 1 : 0;
+          const checklistCount = this.rulesConfig.checklist.length;
+          this.progress.success(
+            `加载自定义规则完成 (${hasGlobal} 全局, ${agentCount} 专用, ${checklistCount} checklist)`
+          );
+        } else {
+          this.progress.info('未找到自定义规则文件');
+        }
+      }
+
+      // Load custom agents if specified
+      let triggeredCustomAgents: LoadedCustomAgent[] = [];
+      if (this.options.customAgentsDirs.length > 0) {
+        this.progress.progress('加载自定义 Agents...');
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Loading custom agents from: ${this.options.customAgentsDirs.join(', ')}`
+          );
+        }
+
+        const loadResult = await loadCustomAgents(this.options.customAgentsDirs, {
+          verbose: this.options.verbose,
+        });
+
+        this.loadedCustomAgents = loadResult.agents;
+
+        if (loadResult.errors.length > 0) {
+          for (const err of loadResult.errors) {
+            this.progress.warn(`加载自定义 Agent 失败: ${err.file}: ${err.error}`);
+          }
+        }
+
+        if (this.loadedCustomAgents.length > 0) {
+          this.progress.success(`加载 ${this.loadedCustomAgents.length} 个自定义 Agents`);
+
+          // Match custom agents against diff
+          this.progress.progress('匹配自定义 Agent 触发条件...');
+          const matchResult = await matchCustomAgents(
+            this.loadedCustomAgents,
+            diffFiles,
+            context.fileAnalyses,
+            {
+              verbose: this.options.verbose,
+              disableLLM: this.options.disableCustomAgentLLM,
+              diffContent: context.diff.diff,
+            }
+          );
+
+          triggeredCustomAgents = matchResult.triggeredAgents.map((t) => t.agent);
+
+          if (triggeredCustomAgents.length > 0) {
+            this.progress.success(`触发 ${triggeredCustomAgents.length} 个自定义 Agents`);
+            for (const { agent, result } of matchResult.triggeredAgents) {
+              this.progress.info(`  ✓ ${agent.name}: ${result.reason}`);
+            }
+          } else {
+            this.progress.info('无自定义 Agent 被触发');
+          }
+
+          if (matchResult.skippedAgents.length > 0 && this.options.verbose) {
+            for (const { agent, reason } of matchResult.skippedAgents) {
+              console.log(
+                `[StreamingOrchestrator] Skipped custom agent "${agent.name}": ${reason}`
+              );
+            }
+          }
+        } else {
+          this.progress.info('未找到自定义 Agent 定义');
+        }
+      }
+
+      // Smart agent selection
+      let agentsToRun = this.options.agents;
+      let selectionResult: AgentSelectionResult | null = null;
+
+      if (this.options.smartAgentSelection) {
+        this.progress.progress('智能选择 Agents...');
+        if (this.options.verbose) {
+          console.log('[StreamingOrchestrator] Running smart agent selection...');
+        }
+
+        selectionResult = await selectAgents(diffFiles, {
+          verbose: this.options.verbose,
+          disableLLM: this.options.disableSelectionLLM,
+        });
+
+        agentsToRun = selectionResult.agents;
+
+        const skippedAgents = this.options.agents.filter((a) => !agentsToRun.includes(a));
+
+        // Show selection summary
+        if (skippedAgents.length > 0) {
+          this.progress.success(
+            `智能选择完成: 运行 ${agentsToRun.length} 个, 跳过 ${skippedAgents.length} 个`
+          );
+        } else {
+          this.progress.success(`智能选择完成: 运行全部 ${agentsToRun.length} 个 Agents`);
+        }
+
+        // Always show agent selection reasons
+        for (const agent of agentsToRun) {
+          const reason = selectionResult.reasons[agent] || '默认选择';
+          this.progress.info(`  ✓ ${agent}: ${reason}`);
+        }
+        for (const agent of skippedAgents) {
+          const reason = selectionResult.reasons[agent] || '不需要';
+          this.progress.info(`  ✗ ${agent}: ${reason}`);
+        }
+
+        if (this.options.verbose) {
+          console.log('[StreamingOrchestrator] Agent selection details:', {
+            usedLLM: selectionResult.usedLLM,
+            confidence: selectionResult.confidence,
+          });
+        }
+      }
+
+      // Create worktree for review (allows agents to read actual source code)
+      const refDisplayStr = getRefDisplayString(sourceRef, input.repoPath);
+      this.progress.progress(`创建 worktree: ${refDisplayStr}...`);
+      if (this.options.verbose) {
+        console.log(`[StreamingOrchestrator] Creating worktree for source ref: ${refDisplayStr}`);
+      }
+      worktreeInfo = createWorktreeForRef(input.repoPath, sourceRef);
+      this.progress.success(`Worktree 已创建: ${worktreeInfo.worktreePath}`);
+      if (this.options.verbose) {
+        console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
+      }
+
+      // Update context to use worktree path for agent execution
+      const reviewRepoPath = worktreeInfo.worktreePath;
+
+      // Reset state for this review
+      this.autoRejectedIssues = [];
+      this.rawIssuesForSkipMode = [];
+
+      // Create realtime deduplicator with progress callbacks
+      this.realtimeDeduplicator = createRealtimeDeduplicator({
+        verbose: this.options.verbose,
+        onDeduplicated: (newIssue, existingIssue, reason) => {
+          this.progress.info(
+            `去重: "${newIssue.title}" 与 "${existingIssue.title}" 重复 (${reason})`
+          );
+        },
+      });
+
+      // Create streaming validator with progress callbacks
+      // Pass project rules so validator can use rule priority logic
+      const projectRulesText = rulesToPromptText(this.rulesConfig);
+      this.streamingValidator = this.options.skipValidation
+        ? undefined
+        : createStreamingValidator({
+            repoPath: reviewRepoPath,
+            verbose: this.options.verbose,
+            maxConcurrentSessions: 5,
+            projectRules: projectRulesText || undefined,
+            callbacks: {
+              onIssueDiscovered: (issue) => {
+                this.progress.issueDiscovered(
+                  issue.title,
+                  issue.file,
+                  issue.severity,
+                  issue.line_start,
+                  issue.description,
+                  issue.suggestion
+                );
+              },
+              onIssueValidated: (issue) => {
+                const reason =
+                  issue.validation_status === 'rejected'
+                    ? issue.rejection_reason || issue.grounding_evidence?.reasoning
+                    : undefined;
+                this.progress.issueValidated({
+                  title: issue.title,
+                  file: issue.file,
+                  line: issue.line_start,
+                  severity: issue.severity,
+                  description: issue.description,
+                  suggestion: issue.suggestion,
+                  status: issue.validation_status,
+                  reason,
+                });
+              },
+              onAutoRejected: (issue, reason) => {
+                this.progress.autoRejected({
+                  title: issue.title,
+                  file: issue.file,
+                  line: issue.line_start,
+                  severity: issue.severity,
+                  description: issue.description,
+                  suggestion: issue.suggestion,
+                  reason,
+                });
+              },
+              onRoundComplete: (_issueId, issueTitle, round, maxRounds, status) => {
+                this.progress.validationRound(issueTitle, round, maxRounds, status);
+              },
+              onValidationActivity: (_issueId, issueTitle, activity) => {
+                this.progress.validationActivity(issueTitle, activity);
+              },
+            },
+          });
+
+      // Phase 2: Run ALL agents in parallel (built-in + custom)
+      const totalAgentCount = agentsToRun.length + triggeredCustomAgents.length;
+      this.progress.phase(2, 4, `运行 ${totalAgentCount} 个 Agents (并行)...`);
+      if (this.options.verbose) {
+        console.log(
+          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom)...`
+        );
+      }
+
+      // Show custom agents starting (built-in agents are shown in runAgentsWithStreaming)
+      for (const agent of triggeredCustomAgents) {
+        this.progress.agent(agent.name, 'running');
+      }
+
+      // Build file analyses summary for custom agents
+      const fileAnalysesSummary = context.fileAnalyses
+        .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
+        .join('\n');
+
+      // Run built-in agents and custom agents IN PARALLEL
+      // Use Promise.allSettled to ensure both complete even if one fails
+      const [builtInSettled, customSettled] = await Promise.allSettled([
+        // Built-in agents
+        this.runAgentsWithStreaming(context, reviewRepoPath, agentsToRun),
+        // Custom agents (returns empty array if none triggered)
+        triggeredCustomAgents.length > 0
+          ? executeCustomAgents(
+              triggeredCustomAgents,
+              {
+                verbose: this.options.verbose,
+                repoPath: reviewRepoPath,
+                diffContent: context.diff.diff,
+                fileAnalysesSummary,
+                standardsText: standardsToText(context.standards),
+              },
+              {
+                onAgentStart: () => {
+                  // No-op: progress is handled elsewhere
+                },
+                onAgentComplete: (agent, result) => {
+                  const elapsed = result.execution_time_ms;
+                  const elapsedStr =
+                    elapsed < 1000 ? `${elapsed}ms` : `${(elapsed / 1000).toFixed(1)}s`;
+                  this.progress.agent(
+                    agent.name,
+                    'completed',
+                    `${result.issues.length} issues, ${elapsedStr}`
+                  );
+                },
+                onAgentError: (agent, error) => {
+                  this.progress.agent(agent.name, 'error', error.message);
+                },
+                onIssueDiscovered: (issue) => {
+                  // Enqueue custom agent issues for validation
+                  if (!this.options.skipValidation && this.streamingValidator) {
+                    const autoRejected = this.streamingValidator.enqueue(issue);
+                    if (autoRejected) {
+                      this.autoRejectedIssues.push(autoRejected);
+                    }
+                  } else if (this.options.skipValidation) {
+                    this.progress.issueDiscovered(
+                      issue.title,
+                      issue.file,
+                      issue.severity,
+                      issue.line_start,
+                      issue.description,
+                      issue.suggestion
+                    );
+                    this.rawIssuesForSkipMode.push(issue);
+                  }
+                },
+              },
+              this.options.maxConcurrency
+            )
+          : Promise.resolve([] as CustomAgentResult[]),
+      ]);
+
+      // Handle built-in agents result (required - throw if failed)
+      if (builtInSettled.status === 'rejected') {
+        throw builtInSettled.reason;
+      }
+      const builtInResult = builtInSettled.value;
+
+      // Handle custom agents result (optional - log error and continue)
+      let customAgentResults: CustomAgentResult[] = [];
+      if (customSettled.status === 'rejected') {
+        console.error('[StreamingOrchestrator] Custom agents failed:', customSettled.reason);
+        this.progress.warn('自定义 Agents 执行失败，继续处理内置 Agents 结果');
+      } else {
+        customAgentResults = customSettled.value;
+      }
+
+      // Collect results from built-in agents
+      const { checklists, tokens: agentTokens } = builtInResult;
+      tokensUsed += agentTokens;
+
+      // Collect results from custom agents
+      if (customAgentResults.length > 0) {
+        const customAgentTokens = customAgentResults.reduce((sum, r) => sum + r.tokens_used, 0);
+        tokensUsed += customAgentTokens;
+
+        const totalCustomIssues = customAgentResults.reduce((sum, r) => sum + r.issues.length, 0);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Custom agents completed: ${totalCustomIssues} issues, ${customAgentTokens} tokens`
+          );
+        }
+      }
+
+      // Phase 3: Wait for all validations to complete
+      this.progress.phase(3, 4, '等待验证完成...');
+      if (this.options.verbose) {
+        console.log('[StreamingOrchestrator] Waiting for validations to complete...');
+      }
+
+      // Flush streaming validator and get results
+      let validatedIssues: ValidatedIssue[] = [];
+      let validationTokens = 0;
+      if (this.streamingValidator) {
+        // Start a status polling interval to show progress while waiting
+        const statusInterval = globalThis.setInterval(() => {
+          const stats = this.streamingValidator?.getStats();
+          if (stats && stats.total > 0) {
+            this.progress.progress(
+              `验证进度: ${stats.completed}/${stats.total} (${stats.activeSessions} 个活跃会话)`
+            );
+          }
+        }, 5000); // Update every 5 seconds
+
+        try {
+          const validationResult = await this.streamingValidator.flush();
+          validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+          validationTokens = validationResult.tokensUsed;
+          tokensUsed += validationTokens;
+        } finally {
+          globalThis.clearInterval(statusInterval);
+        }
+
+        const confirmed = validatedIssues.filter((i) => i.validation_status === 'confirmed').length;
+        const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
+        const uncertain = validatedIssues.length - confirmed - rejected;
+
+        // Get deduplication stats
+        const dedupStats = this.realtimeDeduplicator?.getStats();
+        const dedupTokens = dedupStats?.tokensUsed || 0;
+        tokensUsed += dedupTokens;
+
+        this.progress.validationSummary({
+          total: validatedIssues.length,
+          confirmed,
+          rejected,
+          uncertain,
+          autoRejected: this.autoRejectedIssues.length,
+          deduplicated: dedupStats?.deduplicated || 0,
+          tokensUsed: validationTokens + dedupTokens,
+          timeMs: Date.now() - startTime,
+        });
+      } else if (this.options.skipValidation) {
+        // Skip validation mode - convert raw issues to validated without actual validation
+        validatedIssues = this.rawIssuesForSkipMode.map((issue) => ({
+          ...issue,
+          validation_status: 'pending' as const,
+          grounding_evidence: {
+            checked_files: [],
+            checked_symbols: [],
+            related_context: '跳过验证',
+            reasoning: '用户选择跳过验证',
+          },
+          final_confidence: issue.confidence,
+        }));
+        this.progress.info(`跳过验证: ${validatedIssues.length} 个问题`);
+      }
+
+      this.progress.success(`验证完成: ${validatedIssues.length} 个有效问题`);
+
+      if (this.options.verbose) {
+        console.log(`[StreamingOrchestrator] Total validated issues: ${validatedIssues.length}`);
+      }
+
+      // Phase 4: Aggregate and generate report
+      this.progress.phase(4, 4, '生成报告...');
+      if (this.options.verbose) {
+        console.log('[StreamingOrchestrator] Aggregating results...');
+      }
+
+      const aggregationResult = aggregate(validatedIssues, checklists);
+      const aggregatedIssues = aggregationResult.issues;
+      const aggregatedChecklist = aggregationResult.checklist;
+
+      const metrics = calculateMetrics(
+        validatedIssues.map((i) => ({
+          id: i.id,
+          file: i.file,
+          line_start: i.line_start,
+          line_end: i.line_end,
+          category: i.category,
+          severity: i.severity,
+          title: i.title,
+          description: i.description,
+          confidence: i.confidence,
+          source_agent: i.source_agent,
+        })),
+        aggregatedIssues
+      );
+
+      const metadata = {
+        review_time_ms: Date.now() - startTime,
+        tokens_used: tokensUsed,
+        agents_used: agentsToRun,
+      };
+
+      const report = generateReport(
+        aggregatedIssues,
+        aggregatedChecklist,
+        metrics,
+        context,
+        metadata,
+        'zh'
+      );
+
+      if (this.options.verbose) {
+        console.log(
+          `[StreamingOrchestrator] Review completed in ${report.metadata.review_time_ms}ms`
+        );
+      }
+
+      this.progress.complete(aggregatedIssues.length, report.metadata.review_time_ms);
+
+      return report;
+    } finally {
+      // Clean up worktree
+      if (worktreeInfo) {
+        this.progress.progress('清理 worktree...');
+        if (this.options.verbose) {
+          console.log(`[StreamingOrchestrator] Removing worktree: ${worktreeInfo.worktreePath}`);
+        }
+        try {
+          removeWorktree(worktreeInfo);
+          this.progress.success('Worktree 已清理');
+        } catch (cleanupError) {
+          console.error('[StreamingOrchestrator] Failed to clean up worktree:', cleanupError);
+        }
+      }
+    }
+  }
+
+  /**
    * Build the review context from input
    */
   private async buildContext(
@@ -663,6 +1174,79 @@ export class StreamingReviewOrchestrator {
         diffFiles, // Include parsed diff files for filtering
       },
       diffFiles,
+    };
+  }
+
+  /**
+   * Build the review context from ReviewInput (with auto-detection)
+   */
+  private async buildContextByRefs(input: ReviewInput): Promise<{
+    context: ReviewContext;
+    diffFiles: DiffFile[];
+    sourceRef: GitRef;
+    targetRef: GitRef;
+    reviewMode: ReviewMode;
+  }> {
+    const { sourceRef: sourceRefStr, targetRef: targetRefStr, repoPath } = input;
+    const remote = 'origin';
+
+    // Detect ref types
+    const sourceType = detectRefType(sourceRefStr);
+    const targetType = detectRefType(targetRefStr);
+    const isIncremental = sourceType === 'commit' && targetType === 'commit';
+
+    // Only fetch for branch mode
+    if (!isIncremental) {
+      this.progress.progress('获取远程 refs...');
+      if (this.options.verbose) {
+        console.log('[StreamingOrchestrator] Fetching remote refs...');
+      }
+      fetchRemote(repoPath, remote);
+      this.progress.success('获取远程 refs 完成');
+    } else {
+      this.progress.info('增量模式: 跳过远程 fetch');
+    }
+
+    this.progress.progress('获取 diff...');
+    const diffResult = getDiffByRefs({
+      sourceRef: sourceRefStr,
+      targetRef: targetRefStr,
+      repoPath,
+      skipFetch: true, // Already fetched above if needed
+    });
+    const diffSizeKB = Math.round(diffResult.diff.length / 1024);
+    this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
+
+    this.progress.progress('解析 diff...');
+    const diffFiles = parseDiff(diffResult.diff);
+    this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+
+    // Local diff analysis (fast, no LLM)
+    this.progress.progress('分析变更...');
+    const analyzer = new LocalDiffAnalyzer();
+    const analysisResult = analyzer.analyze(diffFiles);
+    this.progress.success(`分析完成 (${analysisResult.changes.length} 个变更)`);
+
+    // Extract project standards
+    this.progress.progress('提取项目标准...');
+    if (this.options.verbose) {
+      console.log('[StreamingOrchestrator] Extracting project standards...');
+    }
+    const standards = await createStandards(repoPath);
+    this.progress.success('项目标准提取完成');
+
+    return {
+      context: {
+        repoPath,
+        diff: diffResult,
+        fileAnalyses: analysisResult.changes,
+        standards,
+        diffFiles, // Include parsed diff files for filtering
+      },
+      diffFiles,
+      sourceRef: diffResult.sourceRef!,
+      targetRef: diffResult.targetRef!,
+      reviewMode: diffResult.mode || 'branch',
     };
   }
 
@@ -1077,9 +1661,44 @@ export function createStreamingOrchestrator(
 }
 
 /**
- * Convenience function to run a streaming review
+ * Convenience function to run a streaming review (branch-based)
  */
 export async function streamingReview(input: OrchestratorInput): Promise<ReviewReport> {
   const orchestrator = createStreamingOrchestrator(input.options);
   return orchestrator.review(input);
+}
+
+/**
+ * Convenience function to run a streaming review with auto-detection
+ *
+ * This function auto-detects whether the provided refs are branches or commits,
+ * supporting both initial PR reviews and incremental reviews.
+ *
+ * @example
+ * // Branch-based review (initial PR)
+ * await reviewByRefs({ repoPath: '.', sourceRef: 'feature-branch', targetRef: 'main' });
+ *
+ * // Commit-based review (incremental)
+ * await reviewByRefs({ repoPath: '.', sourceRef: 'abc1234', targetRef: 'def5678' });
+ */
+export async function reviewByRefs(input: ReviewInput): Promise<ReviewReport> {
+  const orchestrator = createStreamingOrchestrator(input.options);
+  return orchestrator.reviewByRefs(input);
+}
+
+/**
+ * Unified review function that auto-detects input type
+ *
+ * Accepts either OrchestratorInput (legacy) or ReviewInput (new).
+ * For ReviewInput, auto-detects branch vs commit refs.
+ */
+export async function review(input: OrchestratorInput | ReviewInput): Promise<ReviewReport> {
+  const orchestrator = createStreamingOrchestrator(input.options);
+
+  // Check if it's a ReviewInput (has sourceRef/targetRef) or OrchestratorInput (has sourceBranch/targetBranch)
+  if ('sourceRef' in input && 'targetRef' in input) {
+    return orchestrator.reviewByRefs(input as ReviewInput);
+  } else {
+    return orchestrator.review(input as OrchestratorInput);
+  }
 }

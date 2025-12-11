@@ -2,20 +2,28 @@
  * Type definitions for Git operations
  */
 
+import type { GitRef, ReviewMode } from './ref.js';
+
 /**
  * Git diff result
  */
 export interface DiffResult {
   /** Original diff output from git command */
   diff: string;
-  /** Source branch (contains new code) */
+  /** Source branch (contains new code) - for backward compatibility */
   sourceBranch: string;
-  /** Target branch (merge destination, used as baseline) */
+  /** Target branch (merge destination, used as baseline) - for backward compatibility */
   targetBranch: string;
   /** Repository path where diff was executed */
   repoPath: string;
   /** Remote name used for diff (e.g., 'origin') */
   remote: string;
+  /** Source reference (branch or commit) */
+  sourceRef?: GitRef;
+  /** Target reference (branch or commit) */
+  targetRef?: GitRef;
+  /** Review mode: 'branch' for branch comparison, 'incremental' for commit comparison */
+  mode?: ReviewMode;
 }
 
 /**
@@ -31,6 +39,22 @@ export interface DiffOptions {
   /** Remote name to use (defaults to 'origin') */
   remote?: string;
   /** Skip git fetch (useful when fetch was already done) */
+  skipFetch?: boolean;
+}
+
+/**
+ * Git diff options with reference support
+ */
+export interface DiffByRefsOptions {
+  /** Repository path */
+  repoPath: string;
+  /** Source reference (branch name or commit SHA) */
+  sourceRef: string;
+  /** Target reference (branch name or commit SHA) */
+  targetRef: string;
+  /** Remote name to use (defaults to 'origin', only used for branches) */
+  remote?: string;
+  /** Skip git fetch (useful when fetch was already done, only affects branches) */
   skipFetch?: boolean;
 }
 

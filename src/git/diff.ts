@@ -6,9 +6,10 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { DiffOptions, DiffResult } from './type.js';
+import type { DiffOptions, DiffResult, DiffByRefsOptions } from './type.js';
 import { GitError } from './type.js';
 import { fetchWithLockSync } from './fetch-lock.js';
+import { detectRefType, resolveRef, determineReviewMode, type GitRef } from './ref.js';
 
 // ============================================================================
 // Common Utilities
@@ -139,6 +140,95 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
   }
 }
 
+/**
+ * Get git diff between two references (branches or commits)
+ *
+ * This function auto-detects whether the references are branches or commits:
+ * - If both are commits: Uses two-dot syntax `git diff target..source`
+ * - If either is a branch: Uses three-dot syntax `git diff origin/target...origin/source`
+ *
+ * @param options - Diff options with reference support
+ * @returns Detailed diff result with reference information
+ * @throws {GitError} If git command fails or references are invalid
+ */
+export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
+  const {
+    repoPath,
+    sourceRef: sourceRefStr,
+    targetRef: targetRefStr,
+    remote = 'origin',
+    skipFetch = false,
+  } = options;
+
+  const absolutePath = validateGitRepository(repoPath);
+
+  // Detect reference types
+  const sourceType = detectRefType(sourceRefStr);
+  const targetType = detectRefType(targetRefStr);
+  const isIncremental = sourceType === 'commit' && targetType === 'commit';
+
+  // Fetch remote refs only for branch mode
+  if (!isIncremental && !skipFetch) {
+    fetchRemote(absolutePath, remote);
+  }
+
+  // Resolve references
+  const sourceRef = resolveRef(absolutePath, sourceRefStr, remote);
+  const targetRef = resolveRef(absolutePath, targetRefStr, remote);
+  const mode = determineReviewMode(sourceRef, targetRef);
+
+  // Build diff command based on mode
+  let diffCommand: string;
+  if (isIncremental) {
+    // Incremental mode: two-dot diff between commits
+    // target..source shows commits reachable from source but not from target
+    diffCommand = `git diff ${targetRef.resolvedSha}..${sourceRef.resolvedSha}`;
+  } else {
+    // Branch mode: three-dot diff
+    const sourceArg =
+      sourceRef.type === 'commit' ? sourceRef.resolvedSha : `${remote}/${sourceRef.value}`;
+    const targetArg =
+      targetRef.type === 'commit' ? targetRef.resolvedSha : `${remote}/${targetRef.value}`;
+    diffCommand = `git diff ${targetArg}...${sourceArg}`;
+  }
+
+  try {
+    const diff = execSync(diffCommand, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
+    });
+
+    return {
+      diff,
+      // Backward compatibility: use value for branch names
+      sourceBranch: sourceRef.value,
+      targetBranch: targetRef.value,
+      repoPath: absolutePath,
+      remote,
+      // New fields
+      sourceRef,
+      targetRef,
+      mode,
+    };
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    const sourceDesc =
+      sourceRef.type === 'commit'
+        ? sourceRef.resolvedSha?.slice(0, 7)
+        : `${remote}/${sourceRef.value}`;
+    const targetDesc =
+      targetRef.type === 'commit'
+        ? targetRef.resolvedSha?.slice(0, 7)
+        : `${remote}/${targetRef.value}`;
+    throw new GitError(
+      `Failed to get diff between ${targetDesc} and ${sourceDesc}`,
+      'DIFF_FAILED',
+      err.stderr || err.message
+    );
+  }
+}
+
 // ============================================================================
 // Git Worktree Operations
 // ============================================================================
@@ -204,6 +294,59 @@ export function createWorktreeForReview(
     const err = error as { stderr?: string; message?: string };
     throw new GitError(
       `Failed to create worktree for ${remoteRef}`,
+      'WORKTREE_CREATE_FAILED',
+      err.stderr || err.message
+    );
+  }
+}
+
+/**
+ * Create a temporary worktree for reviewing a Git reference (branch or commit)
+ *
+ * This creates a new worktree in a temp directory, allowing code review
+ * without affecting the main working directory.
+ *
+ * @param repoPath - Path to the git repository
+ * @param ref - Git reference (branch or commit)
+ * @returns Info about the created worktree
+ * @throws {GitError} If worktree creation fails
+ */
+export function createWorktreeForRef(repoPath: string, ref: GitRef): WorktreeInfo {
+  const absolutePath = resolve(repoPath);
+
+  // Create temp directory for worktree
+  const worktreePath = mkdtempSync(join(tmpdir(), 'code-argus-review-'));
+
+  // Determine the ref to checkout
+  const checkoutRef =
+    ref.type === 'commit'
+      ? ref.resolvedSha || ref.value // Use SHA for commits
+      : `${ref.remote || 'origin'}/${ref.value}`; // Use remote/branch for branches
+
+  try {
+    // Create worktree with detached HEAD
+    execSync(`git worktree add --detach "${worktreePath}" ${checkoutRef}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+
+    return {
+      worktreePath,
+      originalRepoPath: absolutePath,
+      checkedOutRef: checkoutRef,
+    };
+  } catch (error: unknown) {
+    // Clean up temp directory on failure
+    try {
+      rmSync(worktreePath, { recursive: true, force: true });
+    } catch {
+      // Ignore cleanup errors
+    }
+
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to create worktree for ${checkoutRef}`,
       'WORKTREE_CREATE_FAILED',
       err.stderr || err.message
     );
