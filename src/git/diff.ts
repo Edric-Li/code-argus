@@ -10,6 +10,11 @@ import type { DiffOptions, DiffResult, DiffByRefsOptions } from './type.js';
 import { GitError } from './type.js';
 import { fetchWithLockSync } from './fetch-lock.js';
 import { detectRefType, resolveRef, determineReviewMode, type GitRef } from './ref.js';
+import {
+  getOrCreateWorktree as managedGetOrCreateWorktree,
+  getOrCreateWorktreeForRef as managedGetOrCreateWorktreeForRef,
+  type ManagedWorktreeInfo,
+} from './worktree-manager.js';
 
 // ============================================================================
 // Common Utilities
@@ -463,3 +468,50 @@ export function getMergeBase(
     );
   }
 }
+
+// ============================================================================
+// Managed Worktree Functions (Persistent with Caching)
+// ============================================================================
+
+/**
+ * Get or create a managed worktree for a branch (with caching and auto-cleanup)
+ *
+ * Unlike createWorktreeForReview, this:
+ * - Uses a persistent directory (~/.code-argus/worktrees/)
+ * - Reuses existing worktrees by updating their checkout
+ * - Automatically cleans up worktrees older than 5 days
+ *
+ * @param repoPath - Path to the git repository
+ * @param sourceBranch - Source branch to checkout
+ * @param remote - Remote name (default: 'origin')
+ * @returns Managed worktree info including whether it was reused
+ */
+export function getManagedWorktree(
+  repoPath: string,
+  sourceBranch: string,
+  remote: string = 'origin'
+): ManagedWorktreeInfo {
+  const absolutePath = resolve(repoPath);
+  return managedGetOrCreateWorktree(absolutePath, sourceBranch, remote);
+}
+
+/**
+ * Get or create a managed worktree for a GitRef (with caching and auto-cleanup)
+ *
+ * @param repoPath - Path to the git repository
+ * @param ref - Git reference (branch or commit)
+ * @returns Managed worktree info including whether it was reused
+ */
+export function getManagedWorktreeForRef(repoPath: string, ref: GitRef): ManagedWorktreeInfo {
+  const absolutePath = resolve(repoPath);
+  return managedGetOrCreateWorktreeForRef(absolutePath, ref);
+}
+
+// Re-export types and functions from worktree-manager
+export type { ManagedWorktreeInfo } from './worktree-manager.js';
+export {
+  WorktreeManager,
+  getWorktreeManager,
+  cleanupStaleWorktrees,
+  type WorktreeManagerOptions,
+} from './worktree-manager.js';

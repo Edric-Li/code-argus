@@ -30,9 +30,8 @@ import {
   getDiffWithOptions,
   getDiffByRefs,
   fetchRemote,
-  createWorktreeForReview,
-  createWorktreeForRef,
-  removeWorktree,
+  getManagedWorktree,
+  getManagedWorktreeForRef,
   type WorktreeInfo,
 } from '../git/diff.js';
 import {
@@ -287,15 +286,18 @@ export class StreamingReviewOrchestrator {
         }
       }
 
-      // Create worktree for review (allows agents to read actual source code)
-      this.progress.progress(`创建 worktree: ${input.sourceBranch}...`);
+      // Get or create managed worktree (reuses existing if available)
+      this.progress.progress(`准备 worktree: ${input.sourceBranch}...`);
       if (this.options.verbose) {
         console.log(
-          `[StreamingOrchestrator] Creating worktree for source branch: ${input.sourceBranch}`
+          `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
         );
       }
-      worktreeInfo = createWorktreeForReview(input.repoPath, input.sourceBranch);
-      this.progress.success(`Worktree 已创建: ${worktreeInfo.worktreePath}`);
+      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch);
+      worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
+      this.progress.success(
+        `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
+      );
       if (this.options.verbose) {
         console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
       }
@@ -604,18 +606,12 @@ export class StreamingReviewOrchestrator {
 
       return report;
     } finally {
-      // Clean up worktree
-      if (worktreeInfo) {
-        this.progress.progress('清理 worktree...');
-        if (this.options.verbose) {
-          console.log(`[StreamingOrchestrator] Removing worktree: ${worktreeInfo.worktreePath}`);
-        }
-        try {
-          removeWorktree(worktreeInfo);
-          this.progress.success('Worktree 已清理');
-        } catch (cleanupError) {
-          console.error('[StreamingOrchestrator] Failed to clean up worktree:', cleanupError);
-        }
+      // Managed worktrees are NOT cleaned up after each review
+      // They are cached for reuse and automatically cleaned up after staleDays (default: 5 days)
+      if (worktreeInfo && this.options.verbose) {
+        console.log(
+          `[StreamingOrchestrator] Worktree preserved for future reuse: ${worktreeInfo.worktreePath}`
+        );
       }
     }
   }
@@ -789,14 +785,19 @@ export class StreamingReviewOrchestrator {
         }
       }
 
-      // Create worktree for review (allows agents to read actual source code)
+      // Get or create managed worktree (reuses existing if available)
       const refDisplayStr = getRefDisplayString(sourceRef, input.repoPath);
-      this.progress.progress(`创建 worktree: ${refDisplayStr}...`);
+      this.progress.progress(`准备 worktree: ${refDisplayStr}...`);
       if (this.options.verbose) {
-        console.log(`[StreamingOrchestrator] Creating worktree for source ref: ${refDisplayStr}`);
+        console.log(
+          `[StreamingOrchestrator] Getting/creating worktree for source ref: ${refDisplayStr}`
+        );
       }
-      worktreeInfo = createWorktreeForRef(input.repoPath, sourceRef);
-      this.progress.success(`Worktree 已创建: ${worktreeInfo.worktreePath}`);
+      const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef);
+      worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
+      this.progress.success(
+        `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
+      );
       if (this.options.verbose) {
         console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
       }
@@ -1105,18 +1106,12 @@ export class StreamingReviewOrchestrator {
 
       return report;
     } finally {
-      // Clean up worktree
-      if (worktreeInfo) {
-        this.progress.progress('清理 worktree...');
-        if (this.options.verbose) {
-          console.log(`[StreamingOrchestrator] Removing worktree: ${worktreeInfo.worktreePath}`);
-        }
-        try {
-          removeWorktree(worktreeInfo);
-          this.progress.success('Worktree 已清理');
-        } catch (cleanupError) {
-          console.error('[StreamingOrchestrator] Failed to clean up worktree:', cleanupError);
-        }
+      // Managed worktrees are NOT cleaned up after each review
+      // They are cached for reuse and automatically cleaned up after staleDays (default: 5 days)
+      if (worktreeInfo && this.options.verbose) {
+        console.log(
+          `[StreamingOrchestrator] Worktree preserved for future reuse: ${worktreeInfo.worktreePath}`
+        );
       }
     }
   }
