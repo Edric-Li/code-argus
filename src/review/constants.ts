@@ -41,18 +41,23 @@ export const DEFAULT_AGENT_MAX_TURNS = 30;
  *
  * 公式：基础轮数 + (文件数 * 每文件轮数)
  * - 基础轮数：10（初始分析 + 总结）
- * - 每文件轮数：5（读取上下文 + 报告问题）
+ * - 每文件轮数：2（读取上下文 + 报告问题）
  * - 最小值：15
- * - 最大值：200
+ * - 最大值：500
  *
  * 示例：
- * - 1 文件: 10 + 5 = 15 轮
- * - 10 文件: 10 + 50 = 60 轮
- * - 98+ 文件: 500 轮 (封顶)
+ * - 1 文件: 10 + 2 = 15 轮 (最小值)
+ * - 10 文件: 10 + 20 = 30 轮
+ * - 245+ 文件: 500 轮 (封顶)
+ *
+ * 优化说明（基于实际数据分析）：
+ * - 94% 的有效问题在前 16 turns 内被发现
+ * - 每文件实际平均只需 ~2.5 turns
+ * - 降低 TURNS_PER_FILE 从 5 到 2 可节省 ~50% 成本
  */
 export function getRecommendedMaxTurns(fileCount: number): number {
   const BASE_TURNS = 10;
-  const TURNS_PER_FILE = 5;
+  const TURNS_PER_FILE = 2;
   const MIN_TURNS = 15;
   const MAX_TURNS = 500;
 

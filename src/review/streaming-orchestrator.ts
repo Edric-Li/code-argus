@@ -1595,6 +1595,7 @@ Write all text (title, description, suggestion) in Chinese.`,
     const mcpServer = mcpServerFactory(agentType);
 
     let tokensUsed = 0;
+    let turnCount = 0;
 
     try {
       const queryStream = query({
@@ -1614,10 +1615,23 @@ Write all text (title, description, suggestion) in Chinese.`,
 
       // Consume the stream
       for await (const message of queryStream) {
+        // 统计 stream_event 消息作为 turn 计数
+        if (message.type === 'stream_event') {
+          turnCount++;
+        }
+
         if (message.type === 'result') {
           const resultMessage = message as SDKResultMessage;
           if (resultMessage.subtype === 'success') {
-            tokensUsed = resultMessage.usage.input_tokens + resultMessage.usage.output_tokens;
+            const inputTokens = resultMessage.usage.input_tokens;
+            const outputTokens = resultMessage.usage.output_tokens;
+            tokensUsed = inputTokens + outputTokens;
+
+            // 详细日志：Agent 最终 token 消耗
+            console.log(
+              `[Agent-Detail] ${agentType} FinalResult ` +
+                `Tokens: input=${inputTokens}, output=${outputTokens}, total=${tokensUsed}, turns=${turnCount}`
+            );
           } else {
             if (this.options.verbose) {
               console.error(
@@ -1631,6 +1645,11 @@ Write all text (title, description, suggestion) in Chinese.`,
     } catch (error) {
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
     }
+
+    // 详细日志：Agent 完成汇总
+    console.log(
+      `[Agent-Summary] ${agentType} completed: turns=${turnCount}, totalTokens=${tokensUsed}`
+    );
 
     if (this.options.verbose) {
       console.log(`[StreamingOrchestrator] Agent ${agentType} completed`);

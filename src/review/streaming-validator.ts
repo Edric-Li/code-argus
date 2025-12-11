@@ -606,8 +606,17 @@ export class StreamingValidator {
           const resultMessage = message as SDKResultMessage;
 
           if (resultMessage.subtype === 'success') {
-            session.tokensUsed +=
-              resultMessage.usage.input_tokens + resultMessage.usage.output_tokens;
+            const inputTokens = resultMessage.usage.input_tokens;
+            const outputTokens = resultMessage.usage.output_tokens;
+            const turnTokens = inputTokens + outputTokens;
+            session.tokensUsed += turnTokens;
+
+            // 详细日志：每轮的 token 消耗
+            console.log(
+              `[Validator-Detail] Issue="${currentIssue?.title?.slice(0, 30)}" Round=${currentRound} ` +
+                `Tokens: input=${inputTokens}, output=${outputTokens}, total=${turnTokens}, ` +
+                `session_total=${session.tokensUsed}`
+            );
 
             const responseText = resultMessage.result || lastAssistantText;
             const response = this.parseResponse(responseText);
@@ -693,6 +702,16 @@ export class StreamingValidator {
                         : undefined;
                   validatedIssue = this.responseToValidatedIssue(response, currentIssue!, note);
                 }
+
+                // 详细日志：Issue 验证完成汇总
+                const roundHistory = currentResponses
+                  .map((r, i) => `R${i + 1}:${r.validation_status}`)
+                  .join(' → ');
+                console.log(
+                  `[Validator-Summary] Issue="${currentIssue?.title?.slice(0, 40)}" ` +
+                    `Rounds=${currentRound} History=[${roundHistory}] ` +
+                    `Final=${validatedIssue.validation_status} SessionTokens=${session.tokensUsed}`
+                );
 
                 completeCurrentIssue(validatedIssue);
 
