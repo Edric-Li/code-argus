@@ -1183,23 +1183,21 @@ export class StreamingReviewOrchestrator {
     reviewMode: ReviewMode;
   }> {
     const { sourceRef: sourceRefStr, targetRef: targetRefStr, repoPath } = input;
-    const remote = 'origin';
 
     // Detect ref types
     const sourceType = detectRefType(sourceRefStr);
     const targetType = detectRefType(targetRefStr);
     const isIncremental = sourceType === 'commit' && targetType === 'commit';
 
-    // Only fetch for branch mode
-    if (!isIncremental) {
-      this.progress.progress('获取远程 refs...');
-      if (this.options.verbose) {
-        console.log('[StreamingOrchestrator] Fetching remote refs...');
-      }
-      fetchRemote(repoPath, remote);
-      this.progress.success('获取远程 refs 完成');
-    } else {
-      this.progress.info('增量模式: 跳过远程 fetch');
+    // Let getDiffByRefs handle fetch logic - it will check if commits exist locally
+    // and only fetch if necessary (smart fetch for incremental mode)
+    this.progress.progress(isIncremental ? '检查 commits...' : '获取远程 refs...');
+    if (this.options.verbose) {
+      console.log(
+        isIncremental
+          ? '[StreamingOrchestrator] Checking if commits exist locally...'
+          : '[StreamingOrchestrator] Fetching remote refs...'
+      );
     }
 
     this.progress.progress('获取 diff...');
@@ -1207,7 +1205,7 @@ export class StreamingReviewOrchestrator {
       sourceRef: sourceRefStr,
       targetRef: targetRefStr,
       repoPath,
-      skipFetch: true, // Already fetched above if needed
+      skipFetch: false, // Let getDiffByRefs handle smart fetch logic
     });
     const diffSizeKB = Math.round(diffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);

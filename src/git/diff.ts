@@ -172,8 +172,32 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
   const targetType = detectRefType(targetRefStr);
   const isIncremental = sourceType === 'commit' && targetType === 'commit';
 
-  // Fetch remote refs only for branch mode
-  if (!isIncremental && !skipFetch) {
+  // For incremental mode, check if commits exist locally first
+  // If not, we need to fetch to get them from remote
+  let needsFetch = !skipFetch;
+  if (isIncremental && !skipFetch) {
+    // Try to verify commits exist locally
+    try {
+      execSync(`git cat-file -t ${sourceRefStr}`, {
+        cwd: absolutePath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      execSync(`git cat-file -t ${targetRefStr}`, {
+        cwd: absolutePath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      // Both commits exist locally, no fetch needed
+      needsFetch = false;
+    } catch {
+      // At least one commit not found locally, need to fetch
+      needsFetch = true;
+    }
+  }
+
+  // Fetch if needed (for branch mode or when commits don't exist locally)
+  if (needsFetch) {
     fetchRemote(absolutePath, remote);
   }
 
