@@ -10,9 +10,15 @@ import { initializeEnv } from './config/env.js';
 // Initialize environment variables for Claude Agent SDK
 initializeEnv();
 
-import { reviewByRefs, formatReport } from './review/index.js';
+import {
+  reviewByRefs,
+  formatReport,
+  loadPreviousReview,
+  validatePreviousReviewData,
+} from './review/index.js';
 import { detectRefType } from './git/ref.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
+import type { PreviousReviewData } from './review/types.js';
 
 /**
  * Print usage information
@@ -35,14 +41,16 @@ Arguments (for review):
   - Commit SHAs:  Uses two-dot diff (target..source) for incremental review
 
 Options (review command):
-  --json-logs          Output as JSON event stream (for service integration)
-                       All progress and final report are output as JSON lines
-  --language=<lang>    Output language: zh (default) | en
-  --config-dir=<path>  Config directory (auto-loads rules/ and agents/)
-  --rules-dir=<path>   Custom review rules directory
-  --agents-dir=<path>  Custom agent definitions directory
-  --skip-validation    Skip issue validation (faster but less accurate)
-  --verbose            Enable verbose output
+  --json-logs              Output as JSON event stream (for service integration)
+                           All progress and final report are output as JSON lines
+  --language=<lang>        Output language: zh (default) | en
+  --config-dir=<path>      Config directory (auto-loads rules/ and agents/)
+  --rules-dir=<path>       Custom review rules directory
+  --agents-dir=<path>      Custom agent definitions directory
+  --skip-validation        Skip issue validation (faster but less accurate)
+  --verbose                Enable verbose output
+  --previous-review=<file> Previous review JSON file for fix verification
+  --no-verify-fixes        Disable fix verification (when previous-review is set)
 
 Config subcommands:
   argus config set <key> <value>     Set a configuration value
@@ -66,6 +74,9 @@ Examples:
   # With options
   argus review /path/to/repo feature-branch main --json-logs
   argus config set api-key sk-ant-xxx
+
+  # Verify fixes from previous review
+  argus review /path/to/repo feature-branch main --previous-review=./review-1.json
 `);
 }
 
@@ -257,15 +268,29 @@ function parseOptions(args: string[]): {
   skipValidation: boolean;
   jsonLogs: boolean;
   verbose: boolean;
+  previousReview?: string;
+  verifyFixes?: boolean;
 } {
-  const options = {
-    language: 'zh' as 'en' | 'zh',
-    configDirs: [] as string[],
-    rulesDirs: [] as string[],
-    customAgentsDirs: [] as string[],
+  const options: {
+    language: 'en' | 'zh';
+    configDirs: string[];
+    rulesDirs: string[];
+    customAgentsDirs: string[];
+    skipValidation: boolean;
+    jsonLogs: boolean;
+    verbose: boolean;
+    previousReview?: string;
+    verifyFixes?: boolean;
+  } = {
+    language: 'zh',
+    configDirs: [],
+    rulesDirs: [],
+    customAgentsDirs: [],
     skipValidation: false,
     jsonLogs: false,
     verbose: false,
+    previousReview: undefined,
+    verifyFixes: undefined,
   };
 
   for (const arg of args) {
@@ -295,6 +320,19 @@ function parseOptions(args: string[]): {
       options.jsonLogs = true;
     } else if (arg === '--verbose') {
       options.verbose = true;
+    } else if (arg.startsWith('--previous-review=')) {
+      const filePath = arg.split('=')[1];
+      if (filePath) {
+        options.previousReview = filePath;
+        // Auto-enable fix verification unless explicitly disabled
+        if (options.verifyFixes === undefined) {
+          options.verifyFixes = true;
+        }
+      }
+    } else if (arg === '--no-verify-fixes') {
+      options.verifyFixes = false;
+    } else if (arg === '--verify-fixes') {
+      options.verifyFixes = true;
     }
   }
 
@@ -322,6 +360,19 @@ async function runReviewCommand(
   const isIncremental = sourceType === 'commit' && targetType === 'commit';
   const modeLabel = isIncremental ? '增量审查 (Incremental)' : '分支审查 (Branch)';
 
+  // Load previous review if specified
+  let previousReviewData: PreviousReviewData | undefined;
+  if (options.previousReview) {
+    try {
+      previousReviewData = loadPreviousReview(options.previousReview);
+      validatePreviousReviewData(previousReviewData);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Error: Failed to load previous review: ${message}`);
+      process.exit(1);
+    }
+  }
+
   // In JSON logs mode, skip the banner - all output is JSON events
   if (!options.jsonLogs) {
     const configInfo =
@@ -332,6 +383,9 @@ async function runReviewCommand(
       options.customAgentsDirs.length > 0
         ? `Custom Agents: ${options.customAgentsDirs.join(', ')}`
         : '';
+    const prevReviewInfo = previousReviewData
+      ? `Prev Review:   ${options.previousReview} (${previousReviewData.issues.length} issues)`
+      : '';
 
     const sourceLabel = sourceType === 'commit' ? 'Source Commit' : 'Source Branch';
     const targetLabel = targetType === 'commit' ? 'Target Commit' : 'Target Branch';
@@ -342,7 +396,7 @@ async function runReviewCommand(
 Repository:    ${repoPath}
 ${sourceLabel}: ${sourceRef}
 ${targetLabel}: ${targetRef}
-Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
 =================================
 `);
   }
@@ -359,6 +413,9 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       customAgentsDirs: options.customAgentsDirs,
       // Use JSON logs mode if specified, otherwise auto-detect
       progressMode: options.jsonLogs ? 'json' : 'auto',
+      // Fix verification options
+      previousReviewData,
+      verifyFixes: options.verifyFixes,
     },
   });
 

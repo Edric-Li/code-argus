@@ -137,3 +137,24 @@ export {
   type SpecialistContext,
   type ValidatorContext,
 } from './prompts/index.js';
+
+// Previous review loader (for fix verification)
+export {
+  loadPreviousReview,
+  validatePreviousReviewData,
+  filterIssuesBySeverity,
+  getPreviousReviewSummary,
+} from './previous-review-loader.js';
+
+// Fix verifier
+export { executeFixVerifier, type FixVerifierOptions } from './fix-verifier.js';
+
+// Fix verification types
+export type {
+  VerificationStatus,
+  PreviousIssue,
+  FixVerificationEvidence,
+  FixVerificationResult,
+  FixVerificationSummary,
+  PreviousReviewData,
+} from './types.js';

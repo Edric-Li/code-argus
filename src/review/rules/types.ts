@@ -8,9 +8,9 @@ import type { AgentType, IssueCategory, ChecklistResult } from '../types.js';
 
 /**
  * Review agent types that support custom rules
- * (excludes 'validator' as it uses its own validation prompts)
+ * (excludes 'validator' and 'fix-verifier' as they use their own prompts)
  */
-export type RuleAgentType = Exclude<AgentType, 'validator'>;
+export type RuleAgentType = Exclude<AgentType, 'validator' | 'fix-verifier'>;
 
 /**
  * Custom checklist item defined in rules

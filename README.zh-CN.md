@@ -83,19 +83,23 @@ argus <command> <repoPath> <sourceBranch> <targetBranch> [options]
 
 ### 命令
 
-| 命令      | 说明                                  |
-| --------- | ------------------------------------- |
-| `analyze` | 快速 Diff 分析（不启动 AI Agent）     |
-| `review`  | 完整 AI 代码审查（多 Agent 并行审查） |
-| `config`  | 配置管理                              |
+| 命令     | 说明                                  |
+| -------- | ------------------------------------- |
+| `review` | 完整 AI 代码审查（多 Agent 并行审查） |
+| `config` | 配置管理                              |
 
 ### 参数
 
-| 参数           | 说明                                               |
-| -------------- | -------------------------------------------------- |
-| `repoPath`     | Git 仓库路径                                       |
-| `sourceBranch` | 源分支（PR 分支，使用 `origin/<sourceBranch>`）    |
-| `targetBranch` | 目标分支（基础分支，使用 `origin/<targetBranch>`） |
+| 参数       | 说明                                |
+| ---------- | ----------------------------------- |
+| `repoPath` | Git 仓库路径                        |
+| `source`   | 源分支名或 commit SHA（自动检测）   |
+| `target`   | 目标分支名或 commit SHA（自动检测） |
+
+**自动检测：**
+
+- 分支名：使用三点式 diff（`origin/target...origin/source`）
+- Commit SHA：使用两点式 diff（`target..source`）用于增量审查
 
 ---
 
@@ -188,45 +192,6 @@ child.stderr.on('data', (chunk) => {
 
 ```bash
 argus review /repo feature main --language=en
-```
-
----
-
-### `--incremental`
-
-**增量审查模式**
-
-只审查自上次审查以来新增的提交，大幅提升审查效率。
-
-```bash
-# 首次审查（完整审查）
-argus review /repo feature main
-
-# 后续审查（只审查新增提交）
-argus review /repo feature main --incremental
-```
-
-**工作原理：**
-
-1. 首次审查会记录当前源分支的 SHA
-2. 后续 `--incremental` 审查只分析新增的提交
-3. 如果没有新提交，会提示并跳过审查
-4. 审查状态保存在 `~/.argus/reviews/` 目录
-
----
-
-### `--reset-state`
-
-**重置审查状态**
-
-清除之前的审查记录，强制执行完整审查。
-
-```bash
-# 重置后执行完整审查
-argus review /repo feature main --reset-state
-
-# 重置后启用增量审查（首次会是完整审查）
-argus review /repo feature main --reset-state --incremental
 ```
 
 ---
@@ -368,32 +333,100 @@ argus review /repo feature main --verbose
 
 ---
 
+### `--previous-review=<file>`
+
+**修复验证模式**
+
+加载上次审查的 JSON 文件，验证已报告的问题是否已修复。
+
+```bash
+# 验证上次审查中的问题是否已修复
+argus review /repo feature main --previous-review=./review-result.json
+```
+
+**工作原理：**
+
+1. 从上次审查 JSON 文件中加载问题列表
+2. 运行 `fix-verifier` Agent 检查每个问题
+3. 报告验证状态：`fixed`（已修复）、`missed`（漏修复）、`false_positive`（误报）、`obsolete`（已过时）或 `uncertain`（不确定）
+4. 漏修复的问题会包含在最终报告中，并更新描述
+
+**上次审查文件格式：**
+
+文件应为包含 `issues` 数组的上次审查 JSON 导出：
+
+```json
+{
+  "issues": [
+    {
+      "id": "sql-injection-auth-42",
+      "file": "src/auth.ts",
+      "line_start": 42,
+      "line_end": 45,
+      "category": "security",
+      "severity": "error",
+      "title": "SQL 注入漏洞",
+      "description": "用户输入直接拼接到 SQL 查询中"
+    }
+  ]
+}
+```
+
+---
+
+### `--no-verify-fixes`
+
+**禁用修复验证**
+
+当设置了 `--previous-review` 时，修复验证默认启用。使用此标志可禁用它。
+
+```bash
+# 加载上次审查但跳过修复验证
+argus review /repo feature main --previous-review=./review.json --no-verify-fixes
+```
+
+---
+
 ## 使用示例
 
 ### 基础用法
 
 ```bash
-# 快速 Diff 分析（无 AI）
-argus analyze /path/to/repo feature-branch main
-
-# 完整 AI 代码审查
+# 完整 AI 代码审查（基于分支）
 argus review /path/to/repo feature-branch main
 
 # 英文输出
 argus review /path/to/repo feature-branch main --language=en
 ```
 
-### 增量审查
+### 增量审查（基于 Commit）
+
+使用 commit SHA 代替分支名来只审查特定的 commit 范围：
 
 ```bash
-# 首次审查
-argus review /repo feature main
+# 审查两个 commit 之间的变更
+argus review /repo abc1234 def5678
 
-# 推送新代码后，只审查新增部分
-argus review /repo feature main --incremental
+# 示例：只审查 feature 分支上的新 commit
+# 首先获取 commit SHA
+git log --oneline feature-branch
 
-# 强制完整审查
-argus review /repo feature main --reset-state
+# 然后审查特定范围
+argus review /repo <新commit-sha> <旧commit-sha>
+```
+
+工具会自动检测传入的是分支名还是 commit SHA，并相应调整 diff 策略。
+
+### 修复验证
+
+验证上次审查中的问题是否已修复：
+
+```bash
+# 保存首次审查结果
+argus review /repo feature main --json-logs 2>&1 | jq 'select(.type=="report") | .data.report' > review-1.json
+
+# 修复后，验证修复情况
+argus review /repo feature main --previous-review=./review-1.json
 ```
 
 ### 自定义配置
@@ -422,8 +455,8 @@ argus review /repo feature main --json-logs 2>events.jsonl
 # 快速检查（跳过验证）
 argus review /repo feature main --skip-validation --json-logs
 
-# 增量 CI 检查
-argus review /repo feature main --incremental --json-logs
+# 基于 commit 的增量 CI 检查
+argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
 ```
 
 ---
@@ -440,13 +473,15 @@ src/
 ├── review/
 │   ├── orchestrator.ts   # 主审查协调器
 │   ├── streaming-orchestrator.ts  # 流式审查模式
+│   ├── streaming-validator.ts    # 流式问题验证
 │   ├── agent-selector.ts # 智能 Agent 选择
 │   ├── validator.ts      # 问题验证（挑战模式）
+│   ├── fix-verifier.ts   # 修复验证 Agent 执行器
+│   ├── previous-review-loader.ts # 加载上次审查数据
 │   ├── realtime-deduplicator.ts  # 实时去重
 │   ├── deduplicator.ts   # 批量语义去重
 │   ├── aggregator.ts     # 问题聚合
 │   ├── report.ts         # 报告生成
-│   ├── state-manager.ts  # 增量审查状态管理
 │   ├── prompts/          # Agent Prompt 构建
 │   ├── standards/        # 项目标准提取
 │   ├── rules/            # 自定义规则加载
@@ -455,6 +490,8 @@ src/
 ├── git/
 │   ├── diff.ts           # Git Diff 操作
 │   ├── parser.ts         # Diff 解析
+│   ├── ref.ts            # Ref 类型检测（分支/commit）
+│   ├── worktree-manager.ts # Git Worktree 管理
 │   └── commits.ts        # 提交历史
 ├── llm/
 │   ├── factory.ts        # LLM 提供者工厂
@@ -468,7 +505,8 @@ src/
 ├── logic-reviewer.md     # 逻辑审查
 ├── style-reviewer.md     # 风格审查
 ├── performance-reviewer.md # 性能审查
-└── validator.md          # 问题验证
+├── validator.md          # 问题验证
+└── fix-verifier.md       # 修复验证
 ```
 
 ## 工作原理
@@ -493,7 +531,11 @@ src/
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  5. 生成报告    │  聚合问题，生成结构化报告
+│  5. 修复验证    │  （可选）验证上次问题是否已修复
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  6. 生成报告    │  聚合问题，生成结构化报告
 └─────────────────┘
 ```
 
@@ -524,6 +566,21 @@ feature:         D --- E
 - 验证代码位置是否正确
 - 验证问题描述是否准确
 - 验证是否为真实问题而非误报
+
+### 修复验证
+
+当提供 `--previous-review` 时，fix-verifier Agent 会检查每个上次的问题：
+
+1. **第一阶段：批量筛查** - 快速扫描，将问题分类为已解决/未解决/不明确
+2. **第二阶段：深入调查** - 对未解决的问题进行多轮深入调查
+
+验证状态：
+
+- **fixed** - 问题已正确修复
+- **missed** - 问题仍然存在（开发者遗漏）
+- **false_positive** - 原始检测是误报
+- **obsolete** - 代码变更较大，问题不再相关
+- **uncertain** - 无法确定状态
 
 ## 开发命令
 

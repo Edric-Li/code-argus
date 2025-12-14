@@ -67,12 +67,18 @@ import {
   type CustomAgentResult,
 } from './custom-agents/index.js';
 import { createRealtimeDeduplicator, type RealtimeDeduplicator } from './realtime-deduplicator.js';
+import { executeFixVerifier } from './fix-verifier.js';
+import type { FixVerificationSummary, PreviousReviewData } from './types.js';
 
 /**
  * Default orchestrator options
  */
-const DEFAULT_OPTIONS: Required<Omit<OrchestratorOptions, 'onEvent'>> & {
+const DEFAULT_OPTIONS: Required<
+  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes'>
+> & {
   onEvent?: OrchestratorOptions['onEvent'];
+  previousReviewData?: PreviousReviewData;
+  verifyFixes?: boolean;
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -86,6 +92,8 @@ const DEFAULT_OPTIONS: Required<Omit<OrchestratorOptions, 'onEvent'>> & {
   disableCustomAgentLLM: false,
   progressMode: 'auto',
   onEvent: undefined,
+  previousReviewData: undefined,
+  verifyFixes: undefined,
 };
 
 /**
@@ -110,6 +118,7 @@ export class StreamingReviewOrchestrator {
   private autoRejectedIssues: ValidatedIssue[] = [];
   private rawIssuesForSkipMode: RawIssue[] = [];
   private loadedCustomAgents: LoadedCustomAgent[] = [];
+  private fixVerificationResults?: FixVerificationSummary;
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -376,12 +385,20 @@ export class StreamingReviewOrchestrator {
             },
           });
 
-      // Phase 2: Run ALL agents in parallel (built-in + custom)
-      const totalAgentCount = agentsToRun.length + triggeredCustomAgents.length;
+      // Phase 2: Run ALL agents in parallel (built-in + custom + fix verifier)
+      // Determine if fix verification should run
+      const previousReviewData = this.options.previousReviewData;
+      const shouldVerifyFixes =
+        previousReviewData &&
+        previousReviewData.issues.length > 0 &&
+        this.options.verifyFixes !== false;
+
+      const totalAgentCount =
+        agentsToRun.length + triggeredCustomAgents.length + (shouldVerifyFixes ? 1 : 0);
       this.progress.phase(2, 4, `运行 ${totalAgentCount} 个 Agents (并行)...`);
       if (this.options.verbose) {
         console.log(
-          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom)...`
+          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom${shouldVerifyFixes ? ' + 1 fix-verifier' : ''})...`
         );
       }
 
@@ -390,14 +407,19 @@ export class StreamingReviewOrchestrator {
         this.progress.agent(agent.name, 'running');
       }
 
+      if (shouldVerifyFixes) {
+        this.progress.agent('fix-verifier', 'running');
+        this.progress.info(`修复验证: 将验证 ${previousReviewData.issues.length} 个上次问题`);
+      }
+
       // Build file analyses summary for custom agents
       const fileAnalysesSummary = context.fileAnalyses
         .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
         .join('\n');
 
-      // Run built-in agents and custom agents IN PARALLEL
-      // Use Promise.allSettled to ensure both complete even if one fails
-      const [builtInSettled, customSettled] = await Promise.allSettled([
+      // Run built-in agents, custom agents, AND fix verifier IN PARALLEL
+      // Use Promise.allSettled to ensure all complete even if some fail
+      const [builtInSettled, customSettled, fixVerifierSettled] = await Promise.allSettled([
         // Built-in agents
         this.runAgentsWithStreaming(context, reviewRepoPath, agentsToRun),
         // Custom agents (returns empty array if none triggered)
@@ -451,6 +473,17 @@ export class StreamingReviewOrchestrator {
               this.options.maxConcurrency
             )
           : Promise.resolve([] as CustomAgentResult[]),
+        // Fix verifier (if previous review data is provided)
+        shouldVerifyFixes
+          ? executeFixVerifier({
+              repoPath: reviewRepoPath,
+              previousReview: previousReviewData,
+              diffContent: context.diff.diff,
+              fileChangesSummary: fileAnalysesSummary,
+              verbose: this.options.verbose,
+              progress: this.progress,
+            })
+          : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
 
       // Handle built-in agents result (required - throw if failed)
@@ -466,6 +499,22 @@ export class StreamingReviewOrchestrator {
         this.progress.warn('自定义 Agents 执行失败，继续处理内置 Agents 结果');
       } else {
         customAgentResults = customSettled.value;
+      }
+
+      // Handle fix verifier result (optional - log error and continue)
+      if (fixVerifierSettled.status === 'rejected') {
+        console.error('[StreamingOrchestrator] Fix verifier failed:', fixVerifierSettled.reason);
+        this.progress.warn('修复验证失败，继续处理其他结果');
+        this.progress.agent('fix-verifier', 'error', String(fixVerifierSettled.reason));
+      } else if (fixVerifierSettled.value) {
+        this.fixVerificationResults = fixVerifierSettled.value;
+        tokensUsed += this.fixVerificationResults.tokens_used;
+        const fv = this.fixVerificationResults;
+        this.progress.agent(
+          'fix-verifier',
+          'completed',
+          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 漏修复, ${fv.by_status.false_positive} 误报`
+        );
       }
 
       // Collect results from built-in agents
@@ -593,7 +642,8 @@ export class StreamingReviewOrchestrator {
         metrics,
         context,
         metadata,
-        'zh'
+        'zh',
+        this.fixVerificationResults
       );
 
       if (this.options.verbose) {
@@ -876,12 +926,20 @@ export class StreamingReviewOrchestrator {
             },
           });
 
-      // Phase 2: Run ALL agents in parallel (built-in + custom)
-      const totalAgentCount = agentsToRun.length + triggeredCustomAgents.length;
+      // Phase 2: Run ALL agents in parallel (built-in + custom + fix verifier)
+      // Determine if fix verification should run
+      const previousReviewData = this.options.previousReviewData;
+      const shouldVerifyFixes =
+        previousReviewData &&
+        previousReviewData.issues.length > 0 &&
+        this.options.verifyFixes !== false;
+
+      const totalAgentCount =
+        agentsToRun.length + triggeredCustomAgents.length + (shouldVerifyFixes ? 1 : 0);
       this.progress.phase(2, 4, `运行 ${totalAgentCount} 个 Agents (并行)...`);
       if (this.options.verbose) {
         console.log(
-          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom)...`
+          `[StreamingOrchestrator] Running ${totalAgentCount} agents in parallel (${agentsToRun.length} built-in + ${triggeredCustomAgents.length} custom${shouldVerifyFixes ? ' + 1 fix-verifier' : ''})...`
         );
       }
 
@@ -890,14 +948,19 @@ export class StreamingReviewOrchestrator {
         this.progress.agent(agent.name, 'running');
       }
 
+      if (shouldVerifyFixes) {
+        this.progress.agent('fix-verifier', 'running');
+        this.progress.info(`修复验证: 将验证 ${previousReviewData.issues.length} 个上次问题`);
+      }
+
       // Build file analyses summary for custom agents
       const fileAnalysesSummary = context.fileAnalyses
         .map((f) => `- ${f.file_path}: ${f.semantic_hints?.summary || 'No summary'}`)
         .join('\n');
 
-      // Run built-in agents and custom agents IN PARALLEL
-      // Use Promise.allSettled to ensure both complete even if one fails
-      const [builtInSettled, customSettled] = await Promise.allSettled([
+      // Run built-in agents, custom agents, AND fix verifier IN PARALLEL
+      // Use Promise.allSettled to ensure all complete even if some fail
+      const [builtInSettled, customSettled, fixVerifierSettled] = await Promise.allSettled([
         // Built-in agents
         this.runAgentsWithStreaming(context, reviewRepoPath, agentsToRun),
         // Custom agents (returns empty array if none triggered)
@@ -951,6 +1014,17 @@ export class StreamingReviewOrchestrator {
               this.options.maxConcurrency
             )
           : Promise.resolve([] as CustomAgentResult[]),
+        // Fix verifier (if previous review data is provided)
+        shouldVerifyFixes
+          ? executeFixVerifier({
+              repoPath: reviewRepoPath,
+              previousReview: previousReviewData,
+              diffContent: context.diff.diff,
+              fileChangesSummary: fileAnalysesSummary,
+              verbose: this.options.verbose,
+              progress: this.progress,
+            })
+          : Promise.resolve(undefined as FixVerificationSummary | undefined),
       ]);
 
       // Handle built-in agents result (required - throw if failed)
@@ -966,6 +1040,22 @@ export class StreamingReviewOrchestrator {
         this.progress.warn('自定义 Agents 执行失败，继续处理内置 Agents 结果');
       } else {
         customAgentResults = customSettled.value;
+      }
+
+      // Handle fix verifier result (optional - log error and continue)
+      if (fixVerifierSettled.status === 'rejected') {
+        console.error('[StreamingOrchestrator] Fix verifier failed:', fixVerifierSettled.reason);
+        this.progress.warn('修复验证失败，继续处理其他结果');
+        this.progress.agent('fix-verifier', 'error', String(fixVerifierSettled.reason));
+      } else if (fixVerifierSettled.value) {
+        this.fixVerificationResults = fixVerifierSettled.value;
+        tokensUsed += this.fixVerificationResults.tokens_used;
+        const fv = this.fixVerificationResults;
+        this.progress.agent(
+          'fix-verifier',
+          'completed',
+          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 漏修复, ${fv.by_status.false_positive} 误报`
+        );
       }
 
       // Collect results from built-in agents
@@ -1093,7 +1183,8 @@ export class StreamingReviewOrchestrator {
         metrics,
         context,
         metadata,
-        'zh'
+        'zh',
+        this.fixVerificationResults
       );
 
       if (this.options.verbose) {

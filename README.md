@@ -83,19 +83,23 @@ argus <command> <repoPath> <sourceBranch> <targetBranch> [options]
 
 ### Commands
 
-| Command   | Description                                       |
-| --------- | ------------------------------------------------- |
-| `analyze` | Quick diff analysis (no AI agents)                |
-| `review`  | Full AI code review (multi-agent parallel review) |
-| `config`  | Configuration management                          |
+| Command  | Description                                       |
+| -------- | ------------------------------------------------- |
+| `review` | Full AI code review (multi-agent parallel review) |
+| `config` | Configuration management                          |
 
 ### Arguments
 
-| Argument       | Description                                               |
-| -------------- | --------------------------------------------------------- |
-| `repoPath`     | Path to Git repository                                    |
-| `sourceBranch` | Source branch (PR branch, uses `origin/<sourceBranch>`)   |
-| `targetBranch` | Target branch (base branch, uses `origin/<targetBranch>`) |
+| Argument   | Description                                      |
+| ---------- | ------------------------------------------------ |
+| `repoPath` | Path to Git repository                           |
+| `source`   | Source branch name or commit SHA (auto-detected) |
+| `target`   | Target branch name or commit SHA (auto-detected) |
+
+**Auto-detection:**
+
+- Branch names: Uses three-dot diff (`origin/target...origin/source`)
+- Commit SHAs: Uses two-dot diff (`target..source`) for incremental review
 
 ---
 
@@ -188,45 +192,6 @@ child.stderr.on('data', (chunk) => {
 
 ```bash
 argus review /repo feature main --language=en
-```
-
----
-
-### `--incremental`
-
-**Incremental review mode**
-
-Only review commits added since the last review, significantly improving review efficiency.
-
-```bash
-# First review (full review)
-argus review /repo feature main
-
-# Subsequent review (only new commits)
-argus review /repo feature main --incremental
-```
-
-**How it works:**
-
-1. First review records the current source branch SHA
-2. Subsequent `--incremental` reviews only analyze new commits
-3. If no new commits, it will notify and skip the review
-4. Review state is saved in `~/.argus/reviews/` directory
-
----
-
-### `--reset-state`
-
-**Reset review state**
-
-Clear previous review records and force a full review.
-
-```bash
-# Reset and perform full review
-argus review /repo feature main --reset-state
-
-# Reset then enable incremental (first run will be full review)
-argus review /repo feature main --reset-state --incremental
 ```
 
 ---
@@ -368,32 +333,100 @@ argus review /repo feature main --verbose
 
 ---
 
+### `--previous-review=<file>`
+
+**Fix verification mode**
+
+Load a previous review JSON file to verify if reported issues have been fixed.
+
+```bash
+# Verify fixes from a previous review
+argus review /repo feature main --previous-review=./review-result.json
+```
+
+**How it works:**
+
+1. Loads issues from the previous review JSON file
+2. Runs the `fix-verifier` agent to check each issue
+3. Reports verification status: `fixed`, `missed`, `false_positive`, `obsolete`, or `uncertain`
+4. Missed issues are included in the final report with updated descriptions
+
+**Previous review file format:**
+
+The file should be a JSON export from a previous review containing an `issues` array:
+
+```json
+{
+  "issues": [
+    {
+      "id": "sql-injection-auth-42",
+      "file": "src/auth.ts",
+      "line_start": 42,
+      "line_end": 45,
+      "category": "security",
+      "severity": "error",
+      "title": "SQL Injection vulnerability",
+      "description": "User input directly concatenated into SQL query"
+    }
+  ]
+}
+```
+
+---
+
+### `--no-verify-fixes`
+
+**Disable fix verification**
+
+When `--previous-review` is set, fix verification is enabled by default. Use this flag to disable it.
+
+```bash
+# Load previous review but skip fix verification
+argus review /repo feature main --previous-review=./review.json --no-verify-fixes
+```
+
+---
+
 ## Examples
 
 ### Basic Usage
 
 ```bash
-# Quick diff analysis (no AI)
-argus analyze /path/to/repo feature-branch main
-
-# Full AI code review
+# Full AI code review (branch-based)
 argus review /path/to/repo feature-branch main
 
 # English output
 argus review /path/to/repo feature-branch main --language=en
 ```
 
-### Incremental Review
+### Incremental Review (Commit-based)
+
+Use commit SHAs instead of branch names to review only specific commit ranges:
 
 ```bash
-# First review
-argus review /repo feature main
+# Review changes between two commits
+argus review /repo abc1234 def5678
 
-# After pushing new code, only review new changes
-argus review /repo feature main --incremental
+# Example: Review only new commits on a feature branch
+# First, get the commit SHAs
+git log --oneline feature-branch
 
-# Force full review
-argus review /repo feature main --reset-state
+# Then review the specific range
+argus review /repo <new-commit-sha> <old-commit-sha>
+```
+
+The tool auto-detects whether you're passing branch names or commit SHAs and adjusts the diff strategy accordingly.
+
+### Fix Verification
+
+Verify if issues from a previous review have been addressed:
+
+```bash
+# Save the first review result
+argus review /repo feature main --json-logs 2>&1 | jq 'select(.type=="report") | .data.report' > review-1.json
+
+# After fixes are made, verify them
+argus review /repo feature main --previous-review=./review-1.json
 ```
 
 ### Custom Configuration
@@ -422,8 +455,8 @@ argus review /repo feature main --json-logs 2>events.jsonl
 # Fast check (skip validation)
 argus review /repo feature main --skip-validation --json-logs
 
-# Incremental CI check
-argus review /repo feature main --incremental --json-logs
+# Commit-based incremental CI check
+argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
 ```
 
 ---
@@ -440,13 +473,15 @@ src/
 ├── review/
 │   ├── orchestrator.ts   # Main review orchestrator
 │   ├── streaming-orchestrator.ts  # Streaming review mode
+│   ├── streaming-validator.ts    # Streaming issue validation
 │   ├── agent-selector.ts # Smart agent selection
 │   ├── validator.ts      # Issue validation (challenge mode)
+│   ├── fix-verifier.ts   # Fix verification agent executor
+│   ├── previous-review-loader.ts # Load previous review data
 │   ├── realtime-deduplicator.ts  # Realtime deduplication
 │   ├── deduplicator.ts   # Batch semantic dedup
 │   ├── aggregator.ts     # Issue aggregation
 │   ├── report.ts         # Report generation
-│   ├── state-manager.ts  # Incremental review state management
 │   ├── prompts/          # Agent prompt building
 │   ├── standards/        # Project standards extraction
 │   ├── rules/            # Custom rules loading
@@ -455,6 +490,8 @@ src/
 ├── git/
 │   ├── diff.ts           # Git diff operations
 │   ├── parser.ts         # Diff parsing
+│   ├── ref.ts            # Ref type detection (branch/commit)
+│   ├── worktree-manager.ts # Git worktree management
 │   └── commits.ts        # Commit history
 ├── llm/
 │   ├── factory.ts        # LLM provider factory
@@ -468,7 +505,8 @@ src/
 ├── logic-reviewer.md     # Logic review
 ├── style-reviewer.md     # Style review
 ├── performance-reviewer.md # Performance review
-└── validator.md          # Issue validation
+├── validator.md          # Issue validation
+└── fix-verifier.md       # Fix verification
 ```
 
 ## How It Works
@@ -493,7 +531,11 @@ src/
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│  5. Generate Report │  Aggregate issues, generate structured report
+│  5. Fix Verify  │  (Optional) Verify if previous issues are fixed
+└────────┬────────┘
+         ▼
+┌─────────────────┐
+│  6. Generate Report │  Aggregate issues, generate structured report
 └─────────────────┘
 ```
 
@@ -524,6 +566,21 @@ Challenge mode: Validator agent attempts to "challenge" discovered issues
 - Verify if code location is correct
 - Verify if issue description is accurate
 - Verify if it's a real issue vs false positive
+
+### Fix Verification
+
+When `--previous-review` is provided, the fix-verifier agent checks each previous issue:
+
+1. **Phase 1: Batch Screening** - Quick scan to categorize issues as resolved/unresolved/unclear
+2. **Phase 2: Deep Investigation** - Thorough multi-round investigation for unresolved issues
+
+Verification statuses:
+
+- **fixed** - Issue properly addressed
+- **missed** - Issue still exists (developer oversight)
+- **false_positive** - Original detection was incorrect
+- **obsolete** - Code changed significantly, issue no longer relevant
+- **uncertain** - Cannot determine status
 
 ## Development Commands
 

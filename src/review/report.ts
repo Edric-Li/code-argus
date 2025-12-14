@@ -15,6 +15,8 @@ import type {
   ReviewContext,
   RawIssue,
   AgentType,
+  FixVerificationSummary,
+  FixVerificationResult,
 } from './types.js';
 import { groupBySeverity } from './aggregator.js';
 
@@ -109,6 +111,27 @@ const TRANSLATIONS = {
     pass: '通过',
     fail: '失败',
     na: '不适用',
+
+    // Fix verification
+    'Fix Verification': '修复验证',
+    'Verification Summary': '验证摘要',
+    'Missed Fixes': '漏修复',
+    'False Positives': '误报',
+    'Verified Fixed': '已修复',
+    'Obsolete Issues': '已过时',
+    'Uncertain Status': '不确定',
+    fixed: '已修复',
+    missed: '漏修复',
+    false_positive: '误报',
+    obsolete: '已过时',
+    uncertain: '不确定',
+    'Original Issue': '原始问题',
+    'Verification Status': '验证状态',
+    'Confidence Level': '置信度',
+    Evidence: '证据',
+    'Related Changes': '相关变更',
+    'False Positive Reason': '误报原因',
+    Notes: '备注',
   },
 } as const;
 
@@ -292,9 +315,10 @@ export function generateReport(
   metrics: ReviewMetrics,
   context?: ReviewContext,
   metadata?: { review_time_ms: number; tokens_used: number; agents_used: AgentType[] },
-  language: 'en' | 'zh' = 'zh'
+  language: 'en' | 'zh' = 'zh',
+  fixVerification?: FixVerificationSummary
 ): ReviewReport {
-  return {
+  const report: ReviewReport = {
     summary: generateSummary(issues, context, language),
     risk_level: determineRiskLevel(issues),
     issues,
@@ -306,6 +330,12 @@ export function generateReport(
       agents_used: [] as AgentType[],
     },
   };
+
+  if (fixVerification) {
+    report.fix_verification = fixVerification;
+  }
+
+  return report;
 }
 
 /**
@@ -437,6 +467,61 @@ export function formatAsMarkdown(report: ReviewReport, options?: ReportOptions):
     }
   }
 
+  // Fix Verification (if available)
+  if (report.fix_verification && report.fix_verification.results.length > 0) {
+    lines.push(`## ${translate('Fix Verification', lang)}`);
+    lines.push('');
+
+    const fv = report.fix_verification;
+    const { by_status } = fv;
+
+    // Summary
+    lines.push(`**${translate('Verification Summary', lang)}**:`);
+    lines.push(`- ✅ ${translate('Verified Fixed', lang)}: ${by_status.fixed}`);
+    lines.push(`- 🔴 ${translate('Missed Fixes', lang)}: ${by_status.missed}`);
+    lines.push(`- 🟡 ${translate('False Positives', lang)}: ${by_status.false_positive}`);
+    lines.push(`- ⚪ ${translate('Obsolete Issues', lang)}: ${by_status.obsolete}`);
+    lines.push(`- ❓ ${translate('Uncertain Status', lang)}: ${by_status.uncertain}`);
+    lines.push('');
+
+    // Missed fixes (important - show in detail)
+    const missedIssues = fv.results.filter((r) => r.status === 'missed');
+    if (missedIssues.length > 0) {
+      lines.push(`### ⚠️ ${translate('Missed Fixes', lang)} (${missedIssues.length})`);
+      lines.push('');
+      for (const result of missedIssues) {
+        lines.push(formatVerificationResultMarkdown(result, lang));
+      }
+      lines.push('');
+    }
+
+    // False positives (show for transparency)
+    const falsePositives = fv.results.filter((r) => r.status === 'false_positive');
+    if (falsePositives.length > 0) {
+      lines.push(`### ℹ️ ${translate('False Positives', lang)} (${falsePositives.length})`);
+      lines.push('');
+      for (const result of falsePositives) {
+        lines.push(formatVerificationResultMarkdown(result, lang));
+      }
+      lines.push('');
+    }
+
+    // Fixed issues (collapsed)
+    const fixedIssues = fv.results.filter((r) => r.status === 'fixed');
+    if (fixedIssues.length > 0) {
+      lines.push(`<details>`);
+      lines.push(
+        `<summary>✅ ${translate('Verified Fixed', lang)} (${fixedIssues.length})</summary>`
+      );
+      lines.push('');
+      for (const result of fixedIssues) {
+        lines.push(formatVerificationResultMarkdown(result, lang, true));
+      }
+      lines.push('</details>');
+      lines.push('');
+    }
+  }
+
   // Metrics
   lines.push(`## ${translate('Metrics', lang)}`);
   lines.push('');
@@ -530,6 +615,81 @@ function formatIssueMarkdown(
     lines.push(`**${translate('Reasoning', language)}**: ${issue.grounding_evidence.reasoning}`);
     lines.push('</details>');
     lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a verification result as Markdown
+ */
+function formatVerificationResultMarkdown(
+  result: FixVerificationResult,
+  language: 'en' | 'zh' = 'zh',
+  compact: boolean = false
+): string {
+  const lines: string[] = [];
+  const issue = result.original_issue;
+
+  // Title
+  lines.push(`#### ${issue.title}`);
+  lines.push('');
+
+  // Basic info
+  const lineRange =
+    issue.line_start === issue.line_end
+      ? `${translate('Line', language)} ${issue.line_start}`
+      : `${translate('Lines', language)} ${issue.line_start}-${issue.line_end}`;
+
+  lines.push(`- **${translate('File', language)}**: \`${issue.file}\` (${lineRange})`);
+  lines.push(`- **${translate('Severity', language)}**: ${translate(issue.severity, language)}`);
+  lines.push(
+    `- **${translate('Verification Status', language)}**: ${translate(result.status, language)}`
+  );
+  lines.push(
+    `- **${translate('Confidence Level', language)}**: ${Math.round(result.confidence * 100)}%`
+  );
+  lines.push('');
+
+  if (!compact) {
+    // Original description
+    lines.push(`**${translate('Description:', language)}**`);
+    lines.push('');
+    lines.push(issue.description);
+    lines.push('');
+
+    // Evidence reasoning
+    if (result.evidence?.reasoning) {
+      lines.push(`**${translate('Reasoning', language)}**:`);
+      lines.push('');
+      lines.push(result.evidence.reasoning);
+      lines.push('');
+    }
+
+    // False positive reason
+    if (result.status === 'false_positive' && result.false_positive_reason) {
+      lines.push(`**${translate('False Positive Reason', language)}**:`);
+      lines.push('');
+      lines.push(result.false_positive_reason);
+      lines.push('');
+    }
+
+    // Updated issue (for missed issues)
+    if (result.status === 'missed' && result.updated_issue) {
+      lines.push(`**${translate('Suggestion:', language)}**`);
+      lines.push('');
+      lines.push(result.updated_issue.suggestion || issue.suggestion || '');
+      lines.push('');
+    }
+
+    // Notes
+    if (result.notes) {
+      lines.push(`**${translate('Notes', language)}**: ${result.notes}`);
+      lines.push('');
+    }
   }
 
   lines.push('---');

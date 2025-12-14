@@ -27,7 +27,8 @@ export type AgentType =
   | 'logic-reviewer'
   | 'style-reviewer'
   | 'performance-reviewer'
-  | 'validator';
+  | 'validator'
+  | 'fix-verifier';
 
 /** Validation strategy for different agent types */
 export type ValidationStrategy = 'immediate' | 'batch-on-agent-complete';
@@ -44,6 +45,7 @@ export const DEFAULT_VALIDATION_STRATEGIES: Record<AgentType, ValidationStrategy
   'security-reviewer': { strategy: 'immediate' },
   'logic-reviewer': { strategy: 'immediate' },
   'performance-reviewer': { strategy: 'immediate' },
+  'fix-verifier': { strategy: 'immediate' },
   validator: { strategy: 'immediate' },
 };
 
@@ -268,6 +270,112 @@ export interface ReviewContext {
 }
 
 // ============================================================================
+// Fix Verification Types
+// ============================================================================
+
+/** Fix verification status */
+export type VerificationStatus =
+  | 'fixed' // Issue has been properly addressed
+  | 'missed' // Issue still exists, developer oversight
+  | 'false_positive' // Original issue was incorrectly reported
+  | 'obsolete' // Code changed so much the issue is no longer relevant
+  | 'uncertain'; // Cannot determine status
+
+/**
+ * Previous issue from last review (simplified from ValidatedIssue)
+ */
+export interface PreviousIssue {
+  /** Unique identifier */
+  id: string;
+  /** File path */
+  file: string;
+  /** Start line number */
+  line_start: number;
+  /** End line number */
+  line_end: number;
+  /** Issue category */
+  category: IssueCategory;
+  /** Severity level */
+  severity: Severity;
+  /** Short title */
+  title: string;
+  /** Detailed description */
+  description: string;
+  /** Fix suggestion */
+  suggestion?: string;
+  /** Related code snippet */
+  code_snippet?: string;
+  /** Confidence score (0-1) */
+  confidence: number;
+  /** Source agent that found this issue */
+  source_agent: AgentType;
+}
+
+/**
+ * Evidence collected during fix verification
+ */
+export interface FixVerificationEvidence {
+  /** Files that were checked during verification */
+  checked_files: string[];
+  /** Code snippets that were examined */
+  examined_code: string[];
+  /** Summary of related changes found */
+  related_changes: string;
+  /** Detailed reasoning for the verification decision */
+  reasoning: string;
+}
+
+/**
+ * Result of verifying a single issue from previous review
+ */
+export interface FixVerificationResult {
+  /** Original issue ID */
+  original_issue_id: string;
+  /** Original issue details */
+  original_issue: PreviousIssue;
+  /** Verification status */
+  status: VerificationStatus;
+  /** Confidence in the verification (0-1) */
+  confidence: number;
+  /** Evidence collected during verification */
+  evidence: FixVerificationEvidence;
+  /** If status is 'missed', updated issue details reflecting current state */
+  updated_issue?: RawIssue;
+  /** If status is 'false_positive', explanation of why */
+  false_positive_reason?: string;
+  /** Additional notes */
+  notes?: string;
+}
+
+/**
+ * Summary of fix verification results
+ */
+export interface FixVerificationSummary {
+  /** Total number of issues verified */
+  total_verified: number;
+  /** Count by verification status */
+  by_status: Record<VerificationStatus, number>;
+  /** All verification results */
+  results: FixVerificationResult[];
+  /** Time spent on verification in milliseconds */
+  verification_time_ms: number;
+  /** Tokens used for verification */
+  tokens_used: number;
+}
+
+/**
+ * Previous review data (input for fix verification)
+ */
+export interface PreviousReviewData {
+  /** Issues from previous review to verify */
+  issues: PreviousIssue[];
+  /** Source reference from previous review (optional, for display) */
+  source?: string;
+  /** Target reference from previous review (optional, for display) */
+  target?: string;
+}
+
+// ============================================================================
 // Report Types
 // ============================================================================
 
@@ -317,6 +425,8 @@ export interface ReviewReport {
   metrics: ReviewMetrics;
   /** Review metadata */
   metadata: ReviewMetadata;
+  /** Fix verification results (if previous review was provided) */
+  fix_verification?: FixVerificationSummary;
 }
 
 // ============================================================================
@@ -415,6 +525,16 @@ export interface OrchestratorOptions {
    * Called for each event in addition to normal progress output
    */
   onEvent?: (event: ReviewProgressEvent) => void;
+  /**
+   * Previous review data for fix verification
+   * When provided, the fix-verifier agent will check if previous issues have been addressed
+   */
+  previousReviewData?: PreviousReviewData;
+  /**
+   * Enable fix verification (default: true if previousReviewData is provided)
+   * Set to false to skip fix verification even when previousReviewData is provided
+   */
+  verifyFixes?: boolean;
 }
 
 /**
