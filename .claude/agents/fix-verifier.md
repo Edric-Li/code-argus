@@ -61,7 +61,7 @@ For issues marked as **unresolved** or **unclear** in Phase 1, conduct thorough 
 **Round 3: Re-evaluate Issue Value**
 For issues that are confirmed NOT fixed, determine:
 
-- Is this a genuine oversight (漏修复)?
+- Is this a genuine oversight (未修复)?
 - Or was the original issue a false positive (误报)?
 
 Consider:

@@ -513,7 +513,7 @@ export class StreamingReviewOrchestrator {
         this.progress.agent(
           'fix-verifier',
           'completed',
-          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 漏修复, ${fv.by_status.false_positive} 误报`
+          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 未修复, ${fv.by_status.false_positive} 误报`
         );
       }
 
@@ -1054,7 +1054,7 @@ export class StreamingReviewOrchestrator {
         this.progress.agent(
           'fix-verifier',
           'completed',
-          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 漏修复, ${fv.by_status.false_positive} 误报`
+          `${fv.by_status.fixed} 已修复, ${fv.by_status.missed} 未修复, ${fv.by_status.false_positive} 误报`
         );
       }
 

@@ -313,7 +313,7 @@ Call this after deep investigation of unresolved/unclear issues.`,
   }
 
   progress?.success(
-    `修复验证完成: ${byStatus.fixed} 已修复, ${byStatus.missed} 漏修复, ${byStatus.false_positive} 误报`
+    `修复验证完成: ${byStatus.fixed} 已修复, ${byStatus.missed} 未修复, ${byStatus.false_positive} 误报`
   );
 
   return summary;
@@ -450,7 +450,7 @@ function getStatusText(status: VerificationStatus): string {
     case 'fixed':
       return '已修复';
     case 'missed':
-      return '漏修复';
+      return '未修复';
     case 'false_positive':
       return '误报';
     case 'obsolete':

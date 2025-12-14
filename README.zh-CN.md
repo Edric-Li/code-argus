@@ -348,8 +348,8 @@ argus review /repo feature main --previous-review=./review-result.json
 
 1. 从上次审查 JSON 文件中加载问题列表
 2. 运行 `fix-verifier` Agent 检查每个问题
-3. 报告验证状态：`fixed`（已修复）、`missed`（漏修复）、`false_positive`（误报）、`obsolete`（已过时）或 `uncertain`（不确定）
-4. 漏修复的问题会包含在最终报告中，并更新描述
+3. 报告验证状态：`fixed`（已修复）、`missed`（未修复）、`false_positive`（误报）、`obsolete`（已过时）或 `uncertain`（不确定）
+4. 未修复的问题会包含在最终报告中，并更新描述
 
 **上次审查文件格式：**
 
