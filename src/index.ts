@@ -4,6 +4,17 @@
  * Main Entry Point
  */
 
+// Global error handlers - must be set up first to catch any errors during startup
+process.on('uncaughtException', (error, origin) => {
+  console.error(`[Argus] Fatal: Uncaught exception from ${origin}:`, error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[Argus] Fatal: Unhandled promise rejection:', reason);
+  process.exit(1);
+});
+
 import 'dotenv/config';
 import { initializeEnv } from './config/env.js';
 
