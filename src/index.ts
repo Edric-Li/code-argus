@@ -525,7 +525,14 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
         timestamp: new Date().toISOString(),
       },
     };
-    process.stderr.write(JSON.stringify(reportEvent) + '\n');
+    // 安全写入 stderr，避免 ERR_STREAM_WRITE_AFTER_END 错误
+    if (process.stderr.writable) {
+      try {
+        process.stderr.write(JSON.stringify(reportEvent) + '\n');
+      } catch {
+        // 忽略写入错误
+      }
+    }
   } else {
     // In normal mode, output formatted markdown report
     const formatted = formatReport(report, {
@@ -624,7 +631,14 @@ export async function main(): Promise<void> {
             timestamp: new Date().toISOString(),
           },
         };
-        process.stderr.write(JSON.stringify(errorEvent) + '\n');
+        // 安全写入 stderr，避免 ERR_STREAM_WRITE_AFTER_END 错误
+        if (process.stderr.writable) {
+          try {
+            process.stderr.write(JSON.stringify(errorEvent) + '\n');
+          } catch {
+            // 忽略写入错误
+          }
+        }
       }
 
       // Also output human-readable error

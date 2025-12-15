@@ -241,8 +241,16 @@ export class ProgressPrinter implements IProgressPrinter {
    * Write spinner frame
    */
   private writeSpinner(): void {
-    const frame = spinnerFrames[this.spinnerIndex];
-    process.stdout.write(`\r      ${this.c('yellow', frame || '⏳')} ${this.currentSpinnerLine}`);
+    // 检查 stdout 是否可写，避免 ERR_STREAM_WRITE_AFTER_END 错误
+    if (!process.stdout.writable) {
+      return;
+    }
+    try {
+      const frame = spinnerFrames[this.spinnerIndex];
+      process.stdout.write(`\r      ${this.c('yellow', frame || '⏳')} ${this.currentSpinnerLine}`);
+    } catch {
+      // 忽略写入错误
+    }
   }
 
   /**
@@ -253,8 +261,14 @@ export class ProgressPrinter implements IProgressPrinter {
       clearInterval(this.spinnerInterval);
       this.spinnerInterval = null;
       if (this.useSpinner && this.currentSpinnerLine) {
-        // Clear the line
-        process.stdout.write('\r' + ' '.repeat(this.currentSpinnerLine.length + 10) + '\r');
+        // Clear the line - 检查流是否可写
+        if (process.stdout.writable) {
+          try {
+            process.stdout.write('\r' + ' '.repeat(this.currentSpinnerLine.length + 10) + '\r');
+          } catch {
+            // 忽略写入错误
+          }
+        }
       }
       this.currentSpinnerLine = '';
     }

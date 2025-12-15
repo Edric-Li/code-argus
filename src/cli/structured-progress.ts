@@ -119,8 +119,16 @@ export class StructuredProgressPrinter implements IProgressPrinter {
   }
 
   private writeJson(event: ReviewEvent): void {
-    const line = JSON.stringify(event) + '\n';
-    this.output.write(line);
+    // 检查流是否可写，避免 ERR_STREAM_WRITE_AFTER_END 错误
+    if (!this.output.writable) {
+      return;
+    }
+    try {
+      const line = JSON.stringify(event) + '\n';
+      this.output.write(line);
+    } catch {
+      // 忽略写入错误，流可能已关闭
+    }
   }
 
   private elapsed(from: 'start' | 'phase' | 'step' = 'phase'): number {
