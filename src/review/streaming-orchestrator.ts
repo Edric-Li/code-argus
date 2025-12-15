@@ -34,6 +34,9 @@ import {
   getManagedWorktreeForRef,
   type WorktreeInfo,
 } from '../git/diff.js';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { execSync } from 'node:child_process';
 import {
   detectRefType,
   getCommitsBetween,
@@ -677,25 +680,41 @@ export class StreamingReviewOrchestrator {
     let tokensUsed = 0;
     let worktreeInfo: WorktreeInfo | null = null;
 
-    // Detect ref types
-    const sourceType = detectRefType(input.sourceRef);
-    const targetType = detectRefType(input.targetRef);
-    const isIncremental = sourceType === 'commit' && targetType === 'commit';
+    // Check if using external diff mode
+    const hasExternalDiff =
+      input.externalDiff?.diffContent ||
+      input.externalDiff?.diffFile ||
+      input.externalDiff?.diffStdin ||
+      input.externalDiff?.commits;
+
+    // Detect ref types (only if refs are provided)
+    const sourceType = input.sourceRef ? detectRefType(input.sourceRef) : undefined;
+    const targetType = input.targetRef ? detectRefType(input.targetRef) : undefined;
+    const isIncremental = !hasExternalDiff && sourceType === 'commit' && targetType === 'commit';
 
     try {
       // Phase 1: Build review context
-      const modeLabel = isIncremental ? '增量审查' : '分支审查';
+      let modeLabel: string;
+      if (hasExternalDiff) {
+        modeLabel = '外部 Diff';
+      } else if (isIncremental) {
+        modeLabel = '增量审查';
+      } else {
+        modeLabel = '分支审查';
+      }
       this.progress.phase(1, 4, `构建${modeLabel}上下文...`);
       if (this.options.verbose) {
         console.log(
-          `[StreamingOrchestrator] Building review context (mode: ${isIncremental ? 'incremental' : 'branch'})...`
+          `[StreamingOrchestrator] Building review context (mode: ${hasExternalDiff ? 'external' : isIncremental ? 'incremental' : 'branch'})...`
         );
       }
 
       const { context, diffFiles, sourceRef, targetRef } = await this.buildContextByRefs(input);
 
       // Show review mode info
-      if (isIncremental) {
+      if (hasExternalDiff) {
+        this.progress.info(`外部 Diff 模式: ${diffFiles.length} 个文件`);
+      } else if (isIncremental && input.sourceRef && input.targetRef && sourceRef && targetRef) {
         const commitRange = getCommitsBetween(input.repoPath, input.targetRef, input.sourceRef);
         const sourceDisplay = getRefDisplayString(sourceRef, input.repoPath);
         const targetDisplay = getRefDisplayString(targetRef, input.repoPath);
@@ -836,24 +855,42 @@ export class StreamingReviewOrchestrator {
       }
 
       // Get or create managed worktree (reuses existing if available)
-      const refDisplayStr = getRefDisplayString(sourceRef, input.repoPath);
-      this.progress.progress(`准备 worktree: ${refDisplayStr}...`);
-      if (this.options.verbose) {
-        console.log(
-          `[StreamingOrchestrator] Getting/creating worktree for source ref: ${refDisplayStr}`
-        );
-      }
-      const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef);
-      worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
-      this.progress.success(
-        `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
-      );
-      if (this.options.verbose) {
-        console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
-      }
+      // For external diff mode without refs, use the repo directly
+      let reviewRepoPath: string;
 
-      // Update context to use worktree path for agent execution
-      const reviewRepoPath = worktreeInfo.worktreePath;
+      if (hasExternalDiff && !sourceRef) {
+        // External diff mode - use repo directly
+        this.progress.progress('使用仓库目录进行审查...');
+        reviewRepoPath = resolve(input.repoPath);
+        this.progress.success(`使用仓库目录: ${reviewRepoPath}`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Using repo directly (external diff mode): ${reviewRepoPath}`
+          );
+        }
+      } else if (sourceRef) {
+        // Normal mode - create worktree
+        const refDisplayStr = getRefDisplayString(sourceRef, input.repoPath);
+        this.progress.progress(`准备 worktree: ${refDisplayStr}...`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Getting/creating worktree for source ref: ${refDisplayStr}`
+          );
+        }
+        const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef);
+        worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
+        reviewRepoPath = worktreeInfo.worktreePath;
+        this.progress.success(
+          `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
+        );
+        if (this.options.verbose) {
+          console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
+        }
+      } else {
+        // Fallback - use repo directly
+        reviewRepoPath = resolve(input.repoPath);
+        this.progress.info(`使用仓库目录: ${reviewRepoPath}`);
+      }
 
       // Reset state for this review
       this.autoRejectedIssues = [];
@@ -1264,16 +1301,171 @@ export class StreamingReviewOrchestrator {
   }
 
   /**
+   * Read diff content from external sources
+   */
+  private async readExternalDiff(input: ReviewInput): Promise<string | null> {
+    const { externalDiff, repoPath } = input;
+    if (!externalDiff) return null;
+
+    // Priority: diffContent > diffFile > diffStdin > commits
+    if (externalDiff.diffContent) {
+      this.progress.progress('使用外部 diff 内容...');
+      return externalDiff.diffContent;
+    }
+
+    if (externalDiff.diffFile) {
+      this.progress.progress(`读取 diff 文件: ${externalDiff.diffFile}...`);
+      try {
+        const filePath = resolve(externalDiff.diffFile);
+        const content = readFileSync(filePath, 'utf-8');
+        this.progress.success(`读取 diff 文件完成 (${Math.round(content.length / 1024)} KB)`);
+        return content;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to read diff file: ${message}`);
+      }
+    }
+
+    if (externalDiff.diffStdin) {
+      // Note: This will block until stdin is closed (EOF).
+      // When used with pipes (e.g., `cat file | argus review`), this works correctly.
+      // If stdin is a TTY with no input, user should press Ctrl+D to signal EOF.
+      this.progress.progress('从 stdin 读取 diff...');
+      try {
+        const chunks: Buffer[] = [];
+        for await (const chunk of process.stdin) {
+          chunks.push(chunk);
+        }
+        const content = Buffer.concat(chunks).toString('utf-8');
+        this.progress.success(`从 stdin 读取 diff 完成 (${Math.round(content.length / 1024)} KB)`);
+        return content;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`Failed to read diff from stdin: ${message}`);
+      }
+    }
+
+    if (externalDiff.commits) {
+      // Get commits array
+      const commits = Array.isArray(externalDiff.commits)
+        ? externalDiff.commits
+        : externalDiff.commits.split(',').map((c) => c.trim());
+
+      if (commits.length === 0) {
+        throw new Error('No commits specified');
+      }
+
+      this.progress.progress(`计算 ${commits.length} 个 commits 的 diff...`);
+      if (this.options.verbose) {
+        console.log(`[StreamingOrchestrator] Computing diff for commits: ${commits.join(', ')}`);
+      }
+
+      // For each commit, get diff against its parent and combine
+      const absolutePath = resolve(repoPath);
+      const diffs: string[] = [];
+
+      for (const sha of commits) {
+        try {
+          // Try to get diff against parent
+          const diff = execSync(`git diff ${sha}^..${sha}`, {
+            cwd: absolutePath,
+            encoding: 'utf-8',
+            maxBuffer: 10 * 1024 * 1024,
+            stdio: 'pipe',
+          });
+          if (diff.trim()) {
+            diffs.push(diff);
+          }
+        } catch {
+          // If no parent (initial commit), use git show
+          try {
+            const diff = execSync(`git show ${sha} --format="" --patch`, {
+              cwd: absolutePath,
+              encoding: 'utf-8',
+              maxBuffer: 10 * 1024 * 1024,
+              stdio: 'pipe',
+            });
+            if (diff.trim()) {
+              diffs.push(diff);
+            }
+          } catch {
+            console.warn(`[StreamingOrchestrator] Failed to get diff for commit ${sha}`);
+          }
+        }
+      }
+
+      const combinedDiff = diffs.join('\n');
+      this.progress.success(`计算 diff 完成 (${Math.round(combinedDiff.length / 1024)} KB)`);
+      return combinedDiff;
+    }
+
+    return null;
+  }
+
+  /**
    * Build the review context from ReviewInput (with auto-detection)
    */
   private async buildContextByRefs(input: ReviewInput): Promise<{
     context: ReviewContext;
     diffFiles: DiffFile[];
-    sourceRef: GitRef;
-    targetRef: GitRef;
+    sourceRef?: GitRef;
+    targetRef?: GitRef;
     reviewMode: ReviewMode;
   }> {
-    const { sourceRef: sourceRefStr, targetRef: targetRefStr, repoPath } = input;
+    const { sourceRef: sourceRefStr, targetRef: targetRefStr, repoPath, externalDiff } = input;
+
+    // Check for external diff first
+    const externalDiffContent = await this.readExternalDiff(input);
+
+    if (externalDiffContent !== null) {
+      // External diff mode - skip git diff computation
+      this.progress.progress('解析外部 diff...');
+      const diffFiles = parseDiff(externalDiffContent);
+      this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+
+      // Local diff analysis (fast, no LLM)
+      this.progress.progress('分析变更...');
+      const analyzer = new LocalDiffAnalyzer();
+      const analysisResult = analyzer.analyze(diffFiles);
+      this.progress.success(`分析完成 (${analysisResult.changes.length} 个变更)`);
+
+      // Extract project standards
+      this.progress.progress('提取项目标准...');
+      if (this.options.verbose) {
+        console.log('[StreamingOrchestrator] Extracting project standards...');
+      }
+      const standards = await createStandards(repoPath);
+      this.progress.success('项目标准提取完成');
+
+      // Create a synthetic DiffResult for external diff
+      const diffResult = {
+        diff: externalDiffContent,
+        sourceBranch: sourceRefStr || 'external',
+        targetBranch: targetRefStr || 'external',
+        repoPath: resolve(repoPath),
+        remote: 'origin',
+        mode: 'external' as ReviewMode,
+      };
+
+      return {
+        context: {
+          repoPath,
+          diff: diffResult,
+          fileAnalyses: analysisResult.changes,
+          standards,
+          diffFiles,
+        },
+        diffFiles,
+        sourceRef: undefined,
+        targetRef: undefined,
+        reviewMode: 'external' as ReviewMode,
+      };
+    }
+
+    // Normal mode - compute diff from refs
+    if (!sourceRefStr || !targetRefStr) {
+      throw new Error('Source and target refs are required when not using external diff');
+    }
 
     // Detect ref types
     const sourceType = detectRefType(sourceRefStr);
@@ -1297,6 +1489,7 @@ export class StreamingReviewOrchestrator {
       targetRef: targetRefStr,
       repoPath,
       skipFetch: false, // Let getDiffByRefs handle smart fetch logic
+      smartMergeFilter: !externalDiff?.disableSmartMergeFilter, // Use smart filtering by default
     });
     const diffSizeKB = Math.round(diffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);

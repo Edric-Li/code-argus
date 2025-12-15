@@ -52,6 +52,12 @@ Options (review command):
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)
 
+External Diff Options (for integration with PR systems):
+  --diff-file=<path>       Read diff from file instead of computing from git
+  --diff-stdin             Read diff from stdin instead of computing from git
+  --commits=<sha1,sha2>    Only diff specific commits (comma-separated)
+  --no-smart-merge-filter  Disable smart merge filtering for incremental mode
+
 Config subcommands:
   argus config set <key> <value>     Set a configuration value
   argus config get <key>             Get a configuration value
@@ -77,6 +83,15 @@ Examples:
 
   # Verify fixes from previous review
   argus review /path/to/repo feature-branch main --previous-review=./review-1.json
+
+  # External diff from file (e.g., from Bitbucket API)
+  argus review /path/to/repo --diff-file=./pr.diff
+
+  # External diff from stdin
+  curl -s "https://bitbucket.org/api/..." | argus review /path/to/repo --diff-stdin
+
+  # Only review specific commits (skip merge commits)
+  argus review /path/to/repo --commits=abc123,def456,ghi789
 `);
 }
 
@@ -258,6 +273,16 @@ function maskApiKey(key: string): string {
 }
 
 /**
+ * External diff options parsed from CLI
+ */
+interface ExternalDiffOptions {
+  diffFile?: string;
+  diffStdin?: boolean;
+  commits?: string[];
+  disableSmartMergeFilter?: boolean;
+}
+
+/**
  * Parse CLI options from arguments
  */
 function parseOptions(args: string[]): {
@@ -270,6 +295,7 @@ function parseOptions(args: string[]): {
   verbose: boolean;
   previousReview?: string;
   verifyFixes?: boolean;
+  externalDiff: ExternalDiffOptions;
 } {
   const options: {
     language: 'en' | 'zh';
@@ -281,6 +307,7 @@ function parseOptions(args: string[]): {
     verbose: boolean;
     previousReview?: string;
     verifyFixes?: boolean;
+    externalDiff: ExternalDiffOptions;
   } = {
     language: 'zh',
     configDirs: [],
@@ -291,6 +318,7 @@ function parseOptions(args: string[]): {
     verbose: false,
     previousReview: undefined,
     verifyFixes: undefined,
+    externalDiff: {},
   };
 
   for (const arg of args) {
@@ -333,6 +361,20 @@ function parseOptions(args: string[]): {
       options.verifyFixes = false;
     } else if (arg === '--verify-fixes') {
       options.verifyFixes = true;
+    } else if (arg.startsWith('--diff-file=')) {
+      const filePath = arg.split('=')[1];
+      if (filePath) {
+        options.externalDiff.diffFile = filePath;
+      }
+    } else if (arg === '--diff-stdin') {
+      options.externalDiff.diffStdin = true;
+    } else if (arg.startsWith('--commits=')) {
+      const commits = arg.split('=')[1];
+      if (commits) {
+        options.externalDiff.commits = commits.split(',').map((c) => c.trim());
+      }
+    } else if (arg === '--no-smart-merge-filter') {
+      options.externalDiff.disableSmartMergeFilter = true;
     }
   }
 
@@ -350,15 +392,38 @@ function parseOptions(args: string[]): {
  */
 async function runReviewCommand(
   repoPath: string,
-  sourceRef: string,
-  targetRef: string,
+  sourceRef: string | undefined,
+  targetRef: string | undefined,
   options: ReturnType<typeof parseOptions>
 ): Promise<void> {
-  // Auto-detect ref types
-  const sourceType = detectRefType(sourceRef);
-  const targetType = detectRefType(targetRef);
-  const isIncremental = sourceType === 'commit' && targetType === 'commit';
-  const modeLabel = isIncremental ? '增量审查 (Incremental)' : '分支审查 (Branch)';
+  // Determine review mode based on inputs
+  const hasExternalDiff =
+    options.externalDiff.diffFile || options.externalDiff.diffStdin || options.externalDiff.commits;
+
+  // If using external diff, refs are optional
+  let modeLabel: string;
+  let sourceType: string | undefined;
+  let targetType: string | undefined;
+
+  if (hasExternalDiff) {
+    modeLabel = '外部 Diff (External)';
+    if (options.externalDiff.diffFile) {
+      modeLabel += ` - 文件: ${options.externalDiff.diffFile}`;
+    } else if (options.externalDiff.diffStdin) {
+      modeLabel += ' - stdin';
+    } else if (options.externalDiff.commits) {
+      modeLabel += ` - ${options.externalDiff.commits.length} commits`;
+    }
+  } else if (sourceRef && targetRef) {
+    sourceType = detectRefType(sourceRef);
+    targetType = detectRefType(targetRef);
+    const isIncremental = sourceType === 'commit' && targetType === 'commit';
+    modeLabel = isIncremental ? '增量审查 (Incremental)' : '分支审查 (Branch)';
+  } else {
+    console.error('Error: Either refs (source/target) or external diff options are required\n');
+    printUsage();
+    process.exit(1);
+  }
 
   // Load previous review if specified
   let previousReviewData: PreviousReviewData | undefined;
@@ -387,10 +452,19 @@ async function runReviewCommand(
       ? `Prev Review:   ${options.previousReview} (${previousReviewData.issues.length} issues)`
       : '';
 
-    const sourceLabel = sourceType === 'commit' ? 'Source Commit' : 'Source Branch';
-    const targetLabel = targetType === 'commit' ? 'Target Commit' : 'Target Branch';
+    if (hasExternalDiff) {
+      console.log(`
+@argus/core - AI Code Review
+=================================
+Repository:    ${repoPath}
+Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
+=================================
+`);
+    } else {
+      const sourceLabel = sourceType === 'commit' ? 'Source Commit' : 'Source Branch';
+      const targetLabel = targetType === 'commit' ? 'Target Commit' : 'Target Branch';
 
-    console.log(`
+      console.log(`
 @argus/core - AI Code Review
 =================================
 Repository:    ${repoPath}
@@ -399,13 +473,25 @@ ${targetLabel}: ${targetRef}
 Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '\n' + rulesInfo : ''}${agentsInfo ? '\n' + agentsInfo : ''}${prevReviewInfo ? '\n' + prevReviewInfo : ''}
 =================================
 `);
+    }
   }
+
+  // Build external diff input if provided
+  const externalDiffInput = hasExternalDiff
+    ? {
+        diffFile: options.externalDiff.diffFile,
+        diffStdin: options.externalDiff.diffStdin,
+        commits: options.externalDiff.commits,
+        disableSmartMergeFilter: options.externalDiff.disableSmartMergeFilter,
+      }
+    : undefined;
 
   // Use the new reviewByRefs API which auto-detects ref types
   const report = await reviewByRefs({
     repoPath,
     sourceRef,
     targetRef,
+    externalDiff: externalDiffInput,
     options: {
       verbose: options.verbose,
       skipValidation: options.skipValidation,
@@ -466,26 +552,52 @@ export async function main(): Promise<void> {
 
   // Handle review command
   if (firstArg === 'review') {
-    if (args.length < 4) {
-      console.error('Error: review command requires <repo> <source> <target>\n');
-      printUsage();
-      process.exit(1);
-    }
+    // Parse all arguments to check for external diff options
+    const allArgs = args.slice(1);
+    const optionArgs = allArgs.filter((a) => a.startsWith('--'));
+    const positionalArgs = allArgs.filter((a) => !a.startsWith('--'));
+    const options = parseOptions(optionArgs);
 
-    const repoPath = args[1] ?? '';
-    const sourceRef = args[2] ?? '';
-    const targetRef = args[3] ?? '';
-    const optionArgs = args.slice(4);
+    // Check if using external diff mode
+    const hasExternalDiff =
+      options.externalDiff.diffFile ||
+      options.externalDiff.diffStdin ||
+      options.externalDiff.commits;
 
-    // Validate arguments are not empty
-    if (!repoPath || !sourceRef || !targetRef) {
-      console.error('Error: All arguments must be non-empty\n');
-      printUsage();
-      process.exit(1);
+    let repoPath: string;
+    let sourceRef: string | undefined;
+    let targetRef: string | undefined;
+
+    if (hasExternalDiff) {
+      // External diff mode: only repo path is required
+      if (positionalArgs.length < 1) {
+        console.error('Error: review command with external diff requires <repo>\n');
+        printUsage();
+        process.exit(1);
+      }
+      repoPath = positionalArgs[0] ?? '';
+      sourceRef = positionalArgs[1]; // Optional
+      targetRef = positionalArgs[2]; // Optional
+    } else {
+      // Normal mode: repo, source, target are required
+      if (positionalArgs.length < 3) {
+        console.error('Error: review command requires <repo> <source> <target>\n');
+        printUsage();
+        process.exit(1);
+      }
+      repoPath = positionalArgs[0] ?? '';
+      sourceRef = positionalArgs[1] ?? '';
+      targetRef = positionalArgs[2] ?? '';
+
+      // Validate arguments are not empty
+      if (!repoPath || !sourceRef || !targetRef) {
+        console.error('Error: All arguments must be non-empty\n');
+        printUsage();
+        process.exit(1);
+      }
     }
 
     try {
-      const options = parseOptions(optionArgs);
       await runReviewCommand(repoPath, sourceRef, targetRef, options);
     } catch (error) {
       if (error instanceof Error) {

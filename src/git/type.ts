@@ -56,6 +56,38 @@ export interface DiffByRefsOptions {
   remote?: string;
   /** Skip git fetch (useful when fetch was already done, only affects branches) */
   skipFetch?: boolean;
+  /**
+   * Enable smart merge filtering for incremental mode (default: true)
+   * When true, filters out changes introduced by merge commits,
+   * only showing actual development changes.
+   */
+  smartMergeFilter?: boolean;
+}
+
+/**
+ * Commit information for incremental diff
+ */
+export interface CommitInfo {
+  /** Commit SHA */
+  sha: string;
+  /** Parent commit SHAs (merge commits have multiple parents) */
+  parents: string[];
+  /** Whether this is a merge commit */
+  isMerge: boolean;
+}
+
+/**
+ * Result of smart incremental diff
+ */
+export interface IncrementalDiffResult {
+  /** Combined diff content */
+  diff: string;
+  /** Commits included in the diff */
+  commits: CommitInfo[];
+  /** Number of merge commits that had conflict resolutions */
+  mergeCommitsWithChanges: number;
+  /** Total non-merge commits */
+  regularCommits: number;
 }
 
 /**

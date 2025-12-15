@@ -56,6 +56,7 @@ export type {
   OrchestratorOptions,
   OrchestratorInput,
   ReviewInput,
+  ExternalDiffInput,
   CommitRangeInfo,
   // Progress event type
   ReviewProgressEvent,

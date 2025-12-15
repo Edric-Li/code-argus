@@ -30,7 +30,7 @@ export interface GitRef {
 /**
  * Review mode based on reference types
  */
-export type ReviewMode = 'branch' | 'incremental';
+export type ReviewMode = 'branch' | 'incremental' | 'external';
 
 /**
  * Detect if a reference is a commit SHA or a branch name

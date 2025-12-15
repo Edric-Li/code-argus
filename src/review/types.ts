@@ -561,6 +561,42 @@ export interface OrchestratorInput {
 }
 
 /**
+ * External diff input options
+ *
+ * Allows providing diff content from external sources (e.g., Bitbucket API)
+ * instead of computing it from git refs.
+ */
+export interface ExternalDiffInput {
+  /**
+   * Diff content provided directly (e.g., from PR API)
+   * When provided, git diff computation is skipped entirely.
+   */
+  diffContent?: string;
+  /**
+   * Path to a file containing the diff
+   * Alternative to diffContent - will be read at runtime.
+   */
+  diffFile?: string;
+  /**
+   * Read diff from stdin
+   * Alternative to diffContent/diffFile.
+   */
+  diffStdin?: boolean;
+  /**
+   * Specific commits to include (comma-separated or array)
+   * Only these commits will be diffed, useful for filtering out merge commits
+   * on the calling side (e.g., from Bitbucket PR API).
+   */
+  commits?: string | string[];
+  /**
+   * Disable smart merge filtering when using refs
+   * Set to true to use legacy two-dot diff for incremental mode.
+   * Default: false (smart filtering enabled)
+   */
+  disableSmartMergeFilter?: boolean;
+}
+
+/**
  * Input for the review orchestrator with auto-detection of branches vs commits
  *
  * This is the preferred input type that supports both:
@@ -569,14 +605,28 @@ export interface OrchestratorInput {
  *
  * The orchestrator auto-detects whether the refs are branches or commits
  * based on their format (7-40 hex chars = commit, otherwise = branch).
+ *
+ * External diff input can be provided to bypass git diff computation entirely,
+ * useful when integrating with external systems like Bitbucket PR Manager.
  */
 export interface ReviewInput {
   /** Repository path */
   repoPath: string;
-  /** Source reference (branch name or commit SHA) */
-  sourceRef: string;
-  /** Target reference (branch name or commit SHA) */
-  targetRef: string;
+  /**
+   * Source reference (branch name or commit SHA)
+   * Optional if external diff is provided.
+   */
+  sourceRef?: string;
+  /**
+   * Target reference (branch name or commit SHA)
+   * Optional if external diff is provided.
+   */
+  targetRef?: string;
+  /**
+   * External diff input options
+   * When provided, allows bypassing git diff computation.
+   */
+  externalDiff?: ExternalDiffInput;
   /** Options */
   options?: OrchestratorOptions;
 }

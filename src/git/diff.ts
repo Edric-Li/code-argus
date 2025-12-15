@@ -6,7 +6,13 @@ import { execSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { DiffOptions, DiffResult, DiffByRefsOptions } from './type.js';
+import type {
+  DiffOptions,
+  DiffResult,
+  DiffByRefsOptions,
+  CommitInfo,
+  IncrementalDiffResult,
+} from './type.js';
 import { GitError } from './type.js';
 import { fetchWithLockSync } from './fetch-lock.js';
 import { detectRefType, resolveRef, determineReviewMode, type GitRef } from './ref.js';
@@ -163,6 +169,7 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
     targetRef: targetRefStr,
     remote = 'origin',
     skipFetch = false,
+    smartMergeFilter = true, // Default to smart filtering
   } = options;
 
   const absolutePath = validateGitRepository(repoPath);
@@ -206,56 +213,72 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
   const targetRef = resolveRef(absolutePath, targetRefStr, remote);
   const mode = determineReviewMode(sourceRef, targetRef);
 
-  // Build diff command based on mode
-  let diffCommand: string;
-  if (isIncremental) {
-    // Incremental mode: two-dot diff between commits
-    // target..source shows commits reachable from source but not from target
-    diffCommand = `git diff ${targetRef.resolvedSha}..${sourceRef.resolvedSha}`;
+  // Build diff based on mode
+  let diff: string;
+
+  if (isIncremental && smartMergeFilter) {
+    // Use smart incremental diff that filters out merge noise
+    const smartResult = getIncrementalDiffSmart(
+      absolutePath,
+      targetRef.resolvedSha!,
+      sourceRef.resolvedSha!
+    );
+    diff = smartResult.diff;
+    // Note: Caller can inspect smartResult for merge filtering stats if needed
+    // smartResult contains: commits, mergeCommitsWithChanges, regularCommits
+  } else if (isIncremental) {
+    // Legacy incremental mode: simple two-dot diff between commits
+    // WARNING: This includes all changes from merged branches!
+    try {
+      diff = execSync(`git diff ${targetRef.resolvedSha}..${sourceRef.resolvedSha}`, {
+        cwd: absolutePath,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (error: unknown) {
+      const err = error as { stderr?: string; message?: string };
+      throw new GitError(
+        `Failed to get diff between ${targetRef.resolvedSha?.slice(0, 7)} and ${sourceRef.resolvedSha?.slice(0, 7)}`,
+        'DIFF_FAILED',
+        err.stderr || err.message
+      );
+    }
   } else {
     // Branch mode: three-dot diff
     const sourceArg =
       sourceRef.type === 'commit' ? sourceRef.resolvedSha : `${remote}/${sourceRef.value}`;
     const targetArg =
       targetRef.type === 'commit' ? targetRef.resolvedSha : `${remote}/${targetRef.value}`;
-    diffCommand = `git diff ${targetArg}...${sourceArg}`;
+    const diffCommand = `git diff ${targetArg}...${sourceArg}`;
+
+    try {
+      diff = execSync(diffCommand, {
+        cwd: absolutePath,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
+      });
+    } catch (error: unknown) {
+      const err = error as { stderr?: string; message?: string };
+      throw new GitError(
+        `Failed to get diff between ${targetArg} and ${sourceArg}`,
+        'DIFF_FAILED',
+        err.stderr || err.message
+      );
+    }
   }
 
-  try {
-    const diff = execSync(diffCommand, {
-      cwd: absolutePath,
-      encoding: 'utf-8',
-      maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
-    });
-
-    return {
-      diff,
-      // Backward compatibility: use value for branch names
-      sourceBranch: sourceRef.value,
-      targetBranch: targetRef.value,
-      repoPath: absolutePath,
-      remote,
-      // New fields
-      sourceRef,
-      targetRef,
-      mode,
-    };
-  } catch (error: unknown) {
-    const err = error as { stderr?: string; message?: string };
-    const sourceDesc =
-      sourceRef.type === 'commit'
-        ? sourceRef.resolvedSha?.slice(0, 7)
-        : `${remote}/${sourceRef.value}`;
-    const targetDesc =
-      targetRef.type === 'commit'
-        ? targetRef.resolvedSha?.slice(0, 7)
-        : `${remote}/${targetRef.value}`;
-    throw new GitError(
-      `Failed to get diff between ${targetDesc} and ${sourceDesc}`,
-      'DIFF_FAILED',
-      err.stderr || err.message
-    );
-  }
+  return {
+    diff,
+    // Backward compatibility: use value for branch names
+    sourceBranch: sourceRef.value,
+    targetBranch: targetRef.value,
+    repoPath: absolutePath,
+    remote,
+    // New fields
+    sourceRef,
+    targetRef,
+    mode,
+  };
 }
 
 // ============================================================================
@@ -488,6 +511,237 @@ export function getMergeBase(
     throw new GitError(
       `Failed to find merge base between ${ref1} and ${ref2}`,
       'MERGE_BASE_FAILED',
+      err.stderr || err.message
+    );
+  }
+}
+
+// ============================================================================
+// Smart Incremental Diff (Merge Filtering)
+// ============================================================================
+
+/**
+ * Get commits between two refs with parent information
+ *
+ * @param repoPath - Path to the git repository
+ * @param targetSha - Target commit SHA (older)
+ * @param sourceSha - Source commit SHA (newer)
+ * @returns Array of commit info including parent relationships
+ */
+export function getCommitsWithParents(
+  repoPath: string,
+  targetSha: string,
+  sourceSha: string
+): CommitInfo[] {
+  const absolutePath = resolve(repoPath);
+
+  try {
+    // Get commits in reverse chronological order with parent info
+    // Format: SHA PARENT1 PARENT2 ... (space separated)
+    const output = execSync(`git log --format="%H %P" ${targetSha}..${sourceSha}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    }).trim();
+
+    if (!output) return [];
+
+    return output.split('\n').map((line) => {
+      const parts = line.split(' ').filter(Boolean);
+      const sha = parts[0]!;
+      const parents = parts.slice(1);
+      return {
+        sha,
+        parents,
+        isMerge: parents.length > 1,
+      };
+    });
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to get commits between ${targetSha} and ${sourceSha}`,
+      'COMMITS_FAILED',
+      err.stderr || err.message
+    );
+  }
+}
+
+/**
+ * Get diff for a single commit against its first parent
+ *
+ * @param repoPath - Path to the git repository
+ * @param sha - Commit SHA
+ * @returns Diff string
+ */
+function getCommitDiff(repoPath: string, sha: string): string {
+  const absolutePath = resolve(repoPath);
+
+  try {
+    return execSync(`git diff ${sha}^..${sha}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: 'pipe',
+    });
+  } catch {
+    // If commit has no parent (initial commit), use git show to get the diff
+    // git show displays the commit's changes in patch format
+    try {
+      return execSync(`git show ${sha} --format="" --patch`, {
+        cwd: absolutePath,
+        encoding: 'utf-8',
+        maxBuffer: 10 * 1024 * 1024,
+        stdio: 'pipe',
+      });
+    } catch {
+      return '';
+    }
+  }
+}
+
+/**
+ * Get "own changes" from a merge commit (conflict resolutions + extra changes)
+ *
+ * Uses git diff-tree --cc to show combined diff, which only includes
+ * changes that differ from ALL parents (i.e., conflict resolutions or
+ * changes made during the merge that weren't in any parent).
+ *
+ * @param repoPath - Path to the git repository
+ * @param mergeSha - Merge commit SHA
+ * @returns Diff string (empty if pure merge with no conflicts)
+ */
+function getMergeCommitOwnChanges(repoPath: string, mergeSha: string): string {
+  const absolutePath = resolve(repoPath);
+
+  try {
+    // --cc shows combined diff for merge commits
+    // Only outputs hunks where the merge result differs from ALL parents
+    const output = execSync(`git diff-tree -p --cc ${mergeSha}`, {
+      cwd: absolutePath,
+      encoding: 'utf-8',
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: 'pipe',
+    }).trim();
+
+    // diff-tree output includes commit info on first line, skip it
+    const lines = output.split('\n');
+    if (lines.length > 0 && lines[0]?.startsWith(mergeSha.slice(0, 7))) {
+      return lines.slice(1).join('\n');
+    }
+    return output;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Get smart incremental diff that filters out merge noise
+ *
+ * This function addresses the problem where a simple `git diff A..B` includes
+ * all changes from merged branches, not just the actual development work.
+ *
+ * Algorithm:
+ * 1. Get all commits between target..source
+ * 2. For regular commits: diff against first parent (sha^..sha)
+ * 3. For merge commits: only get "own changes" (conflict resolutions, etc.)
+ * 4. Combine all diffs
+ *
+ * @param repoPath - Path to the git repository
+ * @param targetSha - Target commit SHA (older)
+ * @param sourceSha - Source commit SHA (newer)
+ * @returns Combined diff with merge noise filtered out
+ */
+export function getIncrementalDiffSmart(
+  repoPath: string,
+  targetSha: string,
+  sourceSha: string
+): IncrementalDiffResult {
+  const absolutePath = resolve(repoPath);
+
+  // Get all commits with parent info
+  const commits = getCommitsWithParents(absolutePath, targetSha, sourceSha);
+
+  if (commits.length === 0) {
+    return {
+      diff: '',
+      commits: [],
+      mergeCommitsWithChanges: 0,
+      regularCommits: 0,
+    };
+  }
+
+  const diffs: string[] = [];
+  let mergeCommitsWithChanges = 0;
+  let regularCommits = 0;
+
+  for (const commit of commits) {
+    if (commit.isMerge) {
+      // For merge commits, only get conflict resolutions and extra changes
+      const mergeOwnDiff = getMergeCommitOwnChanges(absolutePath, commit.sha);
+      if (mergeOwnDiff.trim()) {
+        diffs.push(mergeOwnDiff);
+        mergeCommitsWithChanges++;
+      }
+      // If empty, it was a clean merge with no conflicts - skip it
+    } else {
+      // For regular commits, diff against parent
+      const commitDiff = getCommitDiff(absolutePath, commit.sha);
+      if (commitDiff.trim()) {
+        diffs.push(commitDiff);
+      }
+      regularCommits++;
+    }
+  }
+
+  return {
+    diff: diffs.join('\n'),
+    commits,
+    mergeCommitsWithChanges,
+    regularCommits,
+  };
+}
+
+/**
+ * Get list of files actually changed by non-merge commits
+ *
+ * This is useful when you want to know which files have real development
+ * changes, excluding files that were only touched by merges.
+ *
+ * @param repoPath - Path to the git repository
+ * @param targetSha - Target commit SHA (older)
+ * @param sourceSha - Source commit SHA (newer)
+ * @returns Array of file paths
+ */
+export function getActualChangedFiles(
+  repoPath: string,
+  targetSha: string,
+  sourceSha: string
+): string[] {
+  const absolutePath = resolve(repoPath);
+
+  try {
+    // --no-merges excludes merge commits
+    // --name-only shows only file names
+    // --format="" suppresses commit info
+    const output = execSync(
+      `git log --no-merges --name-only --format="" ${targetSha}..${sourceSha}`,
+      {
+        cwd: absolutePath,
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      }
+    ).trim();
+
+    if (!output) return [];
+
+    // Deduplicate file paths
+    const files = output.split('\n').filter(Boolean);
+    return [...new Set(files)];
+  } catch (error: unknown) {
+    const err = error as { stderr?: string; message?: string };
+    throw new GitError(
+      `Failed to get changed files between ${targetSha} and ${sourceSha}`,
+      'FILES_FAILED',
       err.stderr || err.message
     );
   }
