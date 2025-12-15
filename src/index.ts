@@ -600,10 +600,34 @@ export async function main(): Promise<void> {
     try {
       await runReviewCommand(repoPath, sourceRef, targetRef, options);
     } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
+
+      // Output JSON error event if in json-logs mode
+      if (options.jsonLogs) {
+        const errorEvent = {
+          type: 'review:error',
+          data: {
+            error: errorMsg,
+            stack: errorStack,
+            timestamp: new Date().toISOString(),
+          },
+        };
+        process.stderr.write(JSON.stringify(errorEvent) + '\n');
+      }
+
+      // Also output human-readable error
       if (error instanceof Error) {
-        console.error(`\nError: ${error.message}`);
+        console.error(`\n❌ Review failed: ${error.message}`);
+        // 显示堆栈信息以便调试
+        if (options.verbose || process.env.DEBUG) {
+          console.error('\nStack trace:');
+          console.error(error.stack);
+        } else if (!options.jsonLogs) {
+          console.error('(Run with --verbose or DEBUG=1 to see stack trace)');
+        }
       } else {
-        console.error('\nUnexpected error:', error);
+        console.error('\n❌ Unexpected error:', error);
       }
       process.exit(1);
     }

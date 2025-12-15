@@ -50,7 +50,12 @@ import { LocalDiffAnalyzer } from '../analyzer/local-analyzer.js';
 import { createStreamingValidator, type StreamingValidator } from './streaming-validator.js';
 import { buildStreamingSystemPrompt, buildStreamingUserPrompt } from './prompts/streaming.js';
 import { standardsToText } from './prompts/specialist.js';
-import { DEFAULT_AGENT_MODEL, getRecommendedMaxTurns } from './constants.js';
+import {
+  DEFAULT_AGENT_MODEL,
+  getRecommendedMaxTurns,
+  MAX_AGENT_RETRIES,
+  AGENT_RETRY_DELAY_MS,
+} from './constants.js';
 import { createProgressPrinterWithMode, type IProgressPrinter } from '../cli/index.js';
 import type { ReviewEvent, ReviewStateSnapshot, ReviewEventEmitter } from '../cli/events.js';
 import {
@@ -1598,28 +1603,71 @@ export class StreamingReviewOrchestrator {
 
     const agentPromises = agentsToRun.map(async (agentType) => {
       const startTime = Date.now();
-      try {
-        const result = await this.runStreamingAgent(
-          agentType as AgentType,
-          context,
-          standardsText,
-          mcpServer,
-          reviewRepoPath,
-          dynamicMaxTurns
-        );
-        const elapsed = Date.now() - startTime;
+      let lastError: unknown = null;
 
-        return { agentType, result, elapsed, success: true as const };
-      } catch (error) {
-        const elapsed = Date.now() - startTime;
+      // Retry loop for transient failures
+      for (let attempt = 1; attempt <= MAX_AGENT_RETRIES; attempt++) {
+        try {
+          const result = await this.runStreamingAgent(
+            agentType as AgentType,
+            context,
+            standardsText,
+            mcpServer,
+            reviewRepoPath,
+            dynamicMaxTurns
+          );
+          const elapsed = Date.now() - startTime;
 
-        return { agentType, error, elapsed, success: false as const };
+          // Log successful retry
+          if (attempt > 1) {
+            this.progress.info(`Agent ${agentType} 在第 ${attempt} 次尝试后成功`);
+          }
+
+          return { agentType, result, elapsed, success: true as const };
+        } catch (error) {
+          lastError = error;
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          const errorStack = error instanceof Error ? error.stack : undefined;
+
+          // Log error details (will be output as JSON in json-logs mode)
+          console.error(
+            `[StreamingOrchestrator] Agent ${agentType} error (attempt ${attempt}/${MAX_AGENT_RETRIES}):`,
+            { message: errorMsg, stack: errorStack }
+          );
+
+          if (attempt < MAX_AGENT_RETRIES) {
+            // Emit structured warning for retry
+            this.progress.warn(
+              `Agent ${agentType} 失败 (尝试 ${attempt}/${MAX_AGENT_RETRIES}): ${errorMsg}, 将在 ${AGENT_RETRY_DELAY_MS / 1000}s 后重试...`
+            );
+            this.progress.agent(
+              agentType,
+              'running',
+              `重试中 (${attempt + 1}/${MAX_AGENT_RETRIES})`
+            );
+            // Delay before retry with exponential backoff
+            await new Promise((resolve) =>
+              globalThis.setTimeout(resolve, AGENT_RETRY_DELAY_MS * attempt)
+            );
+          } else {
+            // Final failure - emit error
+            this.progress.error(
+              `Agent ${agentType} 在 ${MAX_AGENT_RETRIES} 次尝试后仍然失败: ${errorMsg}`
+            );
+          }
+        }
       }
+
+      // All retries exhausted
+      const elapsed = Date.now() - startTime;
+      return { agentType, error: lastError, elapsed, success: false as const };
     });
 
     const results = await Promise.all(agentPromises);
 
-    // Collect results
+    // Collect results and check for failures
+    const failedAgents: Array<{ agentType: string; error: unknown }> = [];
+
     for (const res of results) {
       const elapsedStr =
         res.elapsed < 1000 ? `${res.elapsed}ms` : `${(res.elapsed / 1000).toFixed(1)}s`;
@@ -1635,11 +1683,23 @@ export class StreamingReviewOrchestrator {
         }
       } else {
         this.progress.agent(res.agentType, 'error', `failed, ${elapsedStr}`);
+        failedAgents.push({ agentType: res.agentType, error: res.error });
 
         if (this.options.verbose) {
           console.error(`[StreamingOrchestrator] Agent ${res.agentType} failed:`, res.error);
         }
       }
+    }
+
+    // If any agent failed after retries, throw error to fail the review
+    if (failedAgents.length > 0) {
+      const failedNames = failedAgents.map((a) => a.agentType).join(', ');
+      const firstError = failedAgents[0]?.error;
+      const errorMsg =
+        firstError instanceof Error ? firstError.message : String(firstError ?? 'Unknown error');
+      throw new Error(
+        `Review failed: ${failedAgents.length} agent(s) failed after ${MAX_AGENT_RETRIES} retries [${failedNames}]. First error: ${errorMsg}`
+      );
     }
 
     return {

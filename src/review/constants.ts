@@ -143,3 +143,15 @@ export const MAX_CHALLENGE_ROUNDS = 5;
  * 超过的问题会拆分到多个组
  */
 export const MAX_ISSUES_PER_GROUP = 5;
+
+/**
+ * Agent 执行失败时的最大重试次数
+ * 用于处理瞬态错误（如网络超时、API 限流）
+ */
+export const MAX_AGENT_RETRIES = 2;
+
+/**
+ * Agent 重试前的基础延迟（毫秒）
+ * 实际延迟 = BASE_DELAY * attempt（指数退避）
+ */
+export const AGENT_RETRY_DELAY_MS = 2000;
