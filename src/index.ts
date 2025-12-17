@@ -21,6 +21,9 @@ import { initializeEnv } from './config/env.js';
 // Initialize environment variables for Claude Agent SDK
 initializeEnv();
 
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
   reviewByRefs,
   formatReport,
@@ -32,6 +35,22 @@ import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './
 import type { PreviousReviewData } from './review/types.js';
 
 /**
+ * Get package version from package.json
+ */
+function getVersion(): string {
+  try {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    // Try to find package.json (works for both src/ and dist/)
+    const packageJsonPath = join(__dirname, '..', 'package.json');
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+    return packageJson.version || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * Print usage information
  */
 function printUsage(): void {
@@ -41,6 +60,10 @@ Usage: argus <command> [options]
 Commands:
   review <repo> <source> <target>    Run AI code review with multiple agents
   config                             Manage configuration (API key, base URL, model)
+
+Global Options:
+  -v, --version                      Show version number
+  -h, --help                         Show help
 
 Arguments (for review):
   repo          Path to the git repository
@@ -564,6 +587,12 @@ export async function main(): Promise<void> {
   // Handle no arguments or help
   if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
     printUsage();
+    return;
+  }
+
+  // Handle version
+  if (args[0] === '--version' || args[0] === '-v') {
+    console.log(`code-argus v${getVersion()}`);
     return;
   }
 
