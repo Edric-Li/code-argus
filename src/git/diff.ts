@@ -20,6 +20,7 @@ import {
   getOrCreateWorktree as managedGetOrCreateWorktree,
   getOrCreateWorktreeForRef as managedGetOrCreateWorktreeForRef,
   type ManagedWorktreeInfo,
+  type WorktreeManagerOptions,
 } from './worktree-manager.js';
 
 // ============================================================================
@@ -762,15 +763,17 @@ export function getActualChangedFiles(
  * @param repoPath - Path to the git repository
  * @param sourceBranch - Source branch to checkout
  * @param remote - Remote name (default: 'origin')
+ * @param options - Optional worktree manager options (logger, verbose, etc.)
  * @returns Managed worktree info including whether it was reused
  */
 export function getManagedWorktree(
   repoPath: string,
   sourceBranch: string,
-  remote: string = 'origin'
+  remote: string = 'origin',
+  options?: WorktreeManagerOptions
 ): ManagedWorktreeInfo {
   const absolutePath = resolve(repoPath);
-  return managedGetOrCreateWorktree(absolutePath, sourceBranch, remote);
+  return managedGetOrCreateWorktree(absolutePath, sourceBranch, remote, options);
 }
 
 /**
@@ -778,15 +781,20 @@ export function getManagedWorktree(
  *
  * @param repoPath - Path to the git repository
  * @param ref - Git reference (branch or commit)
+ * @param options - Optional worktree manager options (logger, verbose, etc.)
  * @returns Managed worktree info including whether it was reused
  */
-export function getManagedWorktreeForRef(repoPath: string, ref: GitRef): ManagedWorktreeInfo {
+export function getManagedWorktreeForRef(
+  repoPath: string,
+  ref: GitRef,
+  options?: WorktreeManagerOptions
+): ManagedWorktreeInfo {
   const absolutePath = resolve(repoPath);
-  return managedGetOrCreateWorktreeForRef(absolutePath, ref);
+  return managedGetOrCreateWorktreeForRef(absolutePath, ref, options);
 }
 
 // Re-export types and functions from worktree-manager
-export type { ManagedWorktreeInfo } from './worktree-manager.js';
+export type { ManagedWorktreeInfo, WorktreeLogger } from './worktree-manager.js';
 export {
   WorktreeManager,
   getWorktreeManager,

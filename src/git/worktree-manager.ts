@@ -29,6 +29,16 @@ const DEFAULT_STALE_DAYS = 5;
 // Types
 // ============================================================================
 
+/**
+ * Logger interface for worktree operations
+ */
+export interface WorktreeLogger {
+  /** Log informational messages */
+  info(message: string): void;
+  /** Log debug/verbose messages */
+  debug?(message: string): void;
+}
+
 export interface WorktreeManagerOptions {
   /** Base directory for worktrees (default: ~/.code-argus/worktrees) */
   baseDir?: string;
@@ -36,6 +46,10 @@ export interface WorktreeManagerOptions {
   staleDays?: number;
   /** Whether to run cleanup on each operation (default: true) */
   autoCleanup?: boolean;
+  /** Logger for worktree operations (optional) */
+  logger?: WorktreeLogger;
+  /** Enable verbose logging (default: false) */
+  verbose?: boolean;
 }
 
 export interface ManagedWorktreeInfo {
@@ -60,14 +74,40 @@ export class WorktreeManager {
   private baseDir: string;
   private staleDays: number;
   private autoCleanup: boolean;
+  private logger?: WorktreeLogger;
+  private verbose: boolean;
 
   constructor(options: WorktreeManagerOptions = {}) {
     this.baseDir = options.baseDir || DEFAULT_WORKTREE_BASE;
     this.staleDays = options.staleDays ?? DEFAULT_STALE_DAYS;
     this.autoCleanup = options.autoCleanup ?? true;
+    this.logger = options.logger;
+    this.verbose = options.verbose ?? false;
 
     // Ensure base directory exists
     this.ensureBaseDir();
+  }
+
+  /**
+   * Log an informational message
+   */
+  private logInfo(message: string): void {
+    if (this.logger) {
+      this.logger.info(message);
+    } else if (this.verbose) {
+      console.log(message);
+    }
+  }
+
+  /**
+   * Log a debug/verbose message
+   */
+  private logDebug(message: string): void {
+    if (this.logger?.debug) {
+      this.logger.debug(message);
+    } else if (this.verbose) {
+      console.log(message);
+    }
   }
 
   /**
@@ -208,11 +248,11 @@ export class WorktreeManager {
 
     if (reused) {
       // Update existing worktree
-      console.log(`[WorktreeManager] Reusing existing worktree: ${worktreePath}`);
+      this.logDebug(`[WorktreeManager] Reusing existing worktree: ${worktreePath}`);
       this.updateWorktree(worktreePath, remoteRef);
     } else {
       // Create new worktree
-      console.log(`[WorktreeManager] Creating new worktree: ${worktreePath}`);
+      this.logDebug(`[WorktreeManager] Creating new worktree: ${worktreePath}`);
       this.createWorktree(repoPath, worktreePath, remoteRef);
     }
 
@@ -248,10 +288,10 @@ export class WorktreeManager {
     const reused = this.isValidWorktree(worktreePath, repoPath);
 
     if (reused) {
-      console.log(`[WorktreeManager] Reusing existing worktree: ${worktreePath}`);
+      this.logDebug(`[WorktreeManager] Reusing existing worktree: ${worktreePath}`);
       this.updateWorktree(worktreePath, checkoutRef);
     } else {
-      console.log(`[WorktreeManager] Creating new worktree: ${worktreePath}`);
+      this.logDebug(`[WorktreeManager] Creating new worktree: ${worktreePath}`);
       this.createWorktree(repoPath, worktreePath, checkoutRef);
     }
 
@@ -296,7 +336,7 @@ export class WorktreeManager {
         }
 
         if (now - lastUsed > staleMs) {
-          console.log(
+          this.logInfo(
             `[WorktreeManager] Cleaning up stale worktree: ${entry.name} (age: ${Math.floor((now - lastUsed) / (24 * 60 * 60 * 1000))} days)`
           );
 
@@ -318,8 +358,9 @@ export class WorktreeManager {
             try {
               rmSync(worktreePath, { recursive: true, force: true });
               cleanedCount++;
-            } catch {
-              console.warn(`[WorktreeManager] Failed to clean up: ${worktreePath}`);
+            } catch (err) {
+              const message = err instanceof Error ? err.message : String(err);
+              this.logInfo(`[WorktreeManager] Failed to clean up: ${worktreePath} (${message})`);
             }
           }
         }
@@ -342,7 +383,7 @@ export class WorktreeManager {
     }
 
     if (cleanedCount > 0) {
-      console.log(`[WorktreeManager] Cleaned up ${cleanedCount} stale worktrees`);
+      this.logInfo(`[WorktreeManager] Cleaned up ${cleanedCount} stale worktrees`);
     }
 
     return cleanedCount;
@@ -366,8 +407,9 @@ export class WorktreeManager {
       // Fallback to direct removal
       try {
         rmSync(worktreePath, { recursive: true, force: true });
-      } catch {
-        console.warn(`[WorktreeManager] Failed to remove worktree: ${worktreePath}`);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.logInfo(`[WorktreeManager] Failed to remove worktree: ${worktreePath} (${message})`);
       }
     }
   }
@@ -421,6 +463,11 @@ let defaultManager: WorktreeManager | null = null;
 
 /**
  * Get the default worktree manager instance
+ *
+ * Note: When options are provided, a new instance is created to ensure
+ * the latest logger/verbose settings are used. This is intentional as
+ * different callers may need different logging configurations.
+ * The core worktree management (baseDir, staleDays) remains consistent.
  */
 export function getWorktreeManager(options?: WorktreeManagerOptions): WorktreeManager {
   if (!defaultManager || options) {
@@ -435,16 +482,21 @@ export function getWorktreeManager(options?: WorktreeManagerOptions): WorktreeMa
 export function getOrCreateWorktree(
   repoPath: string,
   sourceBranch: string,
-  remote: string = 'origin'
+  remote: string = 'origin',
+  options?: WorktreeManagerOptions
 ): ManagedWorktreeInfo {
-  return getWorktreeManager().getOrCreateWorktree(repoPath, sourceBranch, remote);
+  return getWorktreeManager(options).getOrCreateWorktree(repoPath, sourceBranch, remote);
 }
 
 /**
  * Convenience function: Get or create worktree for a GitRef
  */
-export function getOrCreateWorktreeForRef(repoPath: string, ref: GitRef): ManagedWorktreeInfo {
-  return getWorktreeManager().getOrCreateWorktreeForRef(repoPath, ref);
+export function getOrCreateWorktreeForRef(
+  repoPath: string,
+  ref: GitRef,
+  options?: WorktreeManagerOptions
+): ManagedWorktreeInfo {
+  return getWorktreeManager(options).getOrCreateWorktreeForRef(repoPath, ref);
 }
 
 /**

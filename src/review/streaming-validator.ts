@@ -25,6 +25,7 @@ import {
   MAX_CHALLENGE_ROUNDS,
   MIN_CONFIDENCE_FOR_VALIDATION,
   DEFAULT_AGENT_MODEL,
+  getValidatorMaxTurns,
 } from './constants.js';
 import { extractJSON } from './utils/json-parser.js';
 import { buildValidationSystemPrompt } from './prompts/validation.js';
@@ -549,6 +550,18 @@ export class StreamingValidator {
     const firstPrompt = buildIssuePrompt(currentIssue, true);
     currentRound = 1;
 
+    // 动态计算 maxTurns：基于当前队列大小 + buffer
+    // 预留 buffer 是因为 issues 可能在 session 运行时被动态添加
+    const estimatedIssueCount = Math.max(session.queue.length + 1, 5); // +1 是当前 issue，至少预估 5 个
+    const dynamicMaxTurns = getValidatorMaxTurns(estimatedIssueCount);
+    const maxTurns = Math.max(dynamicMaxTurns, this.options.maxTurns);
+
+    if (this.options.verbose) {
+      console.log(
+        `[StreamingValidator] Session ${session.file} maxTurns: ${maxTurns} (estimated ${estimatedIssueCount} issues)`
+      );
+    }
+
     // Start the query
     const queryStream = query({
       prompt: messageGenerator(),
@@ -556,7 +569,7 @@ export class StreamingValidator {
         cwd: this.options.repoPath,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        maxTurns: this.options.maxTurns,
+        maxTurns,
         model: DEFAULT_AGENT_MODEL,
         settingSources: ['project'],
       },

@@ -41,6 +41,7 @@ import {
   detectRefType,
   getCommitsBetween,
   getRefDisplayString,
+  resolveRef,
   type GitRef,
   type ReviewMode,
 } from '../git/ref.js';
@@ -82,11 +83,12 @@ import type { FixVerificationSummary, PreviousReviewData } from './types.js';
  * Default orchestrator options
  */
 const DEFAULT_OPTIONS: Required<
-  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes'>
+  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree'>
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
   previousReviewData?: PreviousReviewData;
   verifyFixes?: boolean;
+  requireWorktree?: boolean;
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -102,6 +104,7 @@ const DEFAULT_OPTIONS: Required<
   onEvent: undefined,
   previousReviewData: undefined,
   verifyFixes: undefined,
+  requireWorktree: false,
 };
 
 /**
@@ -137,6 +140,21 @@ export class StreamingReviewOrchestrator {
       verbose: this.options.verbose,
       onEvent: this.options.onEvent as ((event: ReviewEvent) => void) | undefined,
     });
+  }
+
+  /**
+   * Create a logger adapter for worktree manager
+   * Routes worktree logs through the progress system for JSON log support
+   */
+  private createWorktreeLogger() {
+    return {
+      info: (message: string) => this.progress.info(message),
+      debug: (message: string) => {
+        if (this.options.verbose) {
+          console.log(message);
+        }
+      },
+    };
   }
 
   /**
@@ -310,7 +328,11 @@ export class StreamingReviewOrchestrator {
           `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
         );
       }
-      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch);
+
+      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch, 'origin', {
+        logger: this.createWorktreeLogger(),
+        verbose: this.options.verbose,
+      });
       worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
       this.progress.success(
         `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
@@ -883,7 +905,11 @@ export class StreamingReviewOrchestrator {
             `[StreamingOrchestrator] Getting/creating worktree for source ref: ${refDisplayStr}`
           );
         }
-        const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef);
+
+        const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef, {
+          logger: this.createWorktreeLogger(),
+          verbose: this.options.verbose,
+        });
         worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
         reviewRepoPath = worktreeInfo.worktreePath;
         this.progress.success(
@@ -893,7 +919,13 @@ export class StreamingReviewOrchestrator {
           console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
         }
       } else {
-        // Fallback - use repo directly
+        // Fallback - use repo directly (only if requireWorktree is not set)
+        if (this.options.requireWorktree) {
+          throw new Error(
+            'Worktree required but could not be created: no valid sourceRef available. ' +
+              'Please provide sourceRef parameter to enable worktree creation.'
+          );
+        }
         reviewRepoPath = resolve(input.repoPath);
         this.progress.info(`使用仓库目录: ${reviewRepoPath}`);
       }
@@ -1454,6 +1486,40 @@ export class StreamingReviewOrchestrator {
         mode: 'external' as ReviewMode,
       };
 
+      // If sourceRef is provided, resolve it for worktree creation
+      // This allows external diff mode to still use worktree for accurate code reading
+      let resolvedSourceRef: GitRef | undefined;
+      if (sourceRefStr) {
+        try {
+          resolvedSourceRef = resolveRef(repoPath, sourceRefStr);
+          if (this.options.verbose) {
+            console.log(
+              `[StreamingOrchestrator] External diff mode with sourceRef: ${sourceRefStr} → worktree will be created`
+            );
+          }
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          // If requireWorktree is enabled, fail immediately
+          if (this.options.requireWorktree) {
+            throw new Error(
+              `Worktree required but failed to resolve sourceRef "${sourceRefStr}": ${errorMsg}`
+            );
+          }
+          // Otherwise log warning and continue without worktree
+          if (this.options.verbose) {
+            console.warn(
+              `[StreamingOrchestrator] Failed to resolve sourceRef "${sourceRefStr}", will use repo directly:`,
+              errorMsg
+            );
+          }
+        }
+      } else if (this.options.requireWorktree) {
+        // requireWorktree is enabled but no sourceRef provided
+        throw new Error(
+          'Worktree required but no sourceRef provided. Please provide sourceRef with external diff for worktree creation.'
+        );
+      }
+
       return {
         context: {
           repoPath,
@@ -1463,7 +1529,7 @@ export class StreamingReviewOrchestrator {
           diffFiles,
         },
         diffFiles,
-        sourceRef: undefined,
+        sourceRef: resolvedSourceRef,
         targetRef: undefined,
         reviewMode: 'external' as ReviewMode,
       };
