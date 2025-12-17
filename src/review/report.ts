@@ -208,7 +208,8 @@ const DEFAULT_OPTIONS: Required<ReportOptions> = {
  */
 export function calculateMetrics(
   rawIssues: RawIssue[],
-  validatedIssues: ValidatedIssue[]
+  validatedIssues: ValidatedIssue[],
+  filesReviewed: number = 0
 ): ReviewMetrics {
   const bySeverity: Record<Severity, number> = {
     critical: 0,
@@ -237,6 +238,7 @@ export function calculateMetrics(
     uncertain: validatedIssues.filter((i) => i.validation_status === 'uncertain').length,
     by_severity: bySeverity,
     by_category: byCategory,
+    files_reviewed: filesReviewed,
   };
 }
 

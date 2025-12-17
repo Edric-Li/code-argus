@@ -635,7 +635,8 @@ export class StreamingReviewOrchestrator {
           confidence: i.confidence,
           source_agent: i.source_agent,
         })),
-        aggregatedIssues
+        aggregatedIssues,
+        diffFiles.length
       );
 
       const metadata = {
@@ -1210,7 +1211,8 @@ export class StreamingReviewOrchestrator {
           confidence: i.confidence,
           source_agent: i.source_agent,
         })),
-        aggregatedIssues
+        aggregatedIssues,
+        diffFiles.length
       );
 
       const metadata = {

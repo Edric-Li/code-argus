@@ -395,6 +395,8 @@ export interface ReviewMetrics {
   by_severity: Record<Severity, number>;
   /** Issues by category */
   by_category: Record<IssueCategory, number>;
+  /** Number of files reviewed */
+  files_reviewed: number;
 }
 
 /**
