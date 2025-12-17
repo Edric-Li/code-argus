@@ -27,9 +27,44 @@ export const DEFAULT_REALTIME_DEDUP_MODEL = 'claude-haiku-4-5-20251001';
 export const DEFAULT_AGENT_MAX_THINKING_TOKENS = 0;
 
 /**
- * 验证 Agent 的默认最大轮数
+ * 验证 Agent 的默认最大轮数（兜底值）
+ * @deprecated 请使用 getValidatorMaxTurns(issueCount) 获取动态值
  */
 export const DEFAULT_VALIDATOR_MAX_TURNS = 30;
+
+/**
+ * 根据 issue 数量计算验证器的 maxTurns
+ *
+ * 公式：基础轮数 + (issue 数 * 每 issue 轮数)
+ * - 基础轮数：5（session 初始化开销）
+ * - 每 issue 轮数：5（挑战模式最多 5 轮）
+ * - 最小值：20（至少能处理 3 个 issues）
+ * - 最大值：300（防止单个 session 过长）
+ *
+ * 示例：
+ * - 1 issue: 5 + 5 = 20 轮 (最小值)
+ * - 5 issues: 5 + 25 = 30 轮
+ * - 10 issues: 5 + 50 = 55 轮
+ * - 60+ issues: 300 轮 (封顶)
+ *
+ * 注意：实际轮数通常更少，因为：
+ * - 大多数 issues 2-3 轮就会稳定（连续两轮一致即终止）
+ * - 低置信度 issues 会被自动拒绝，不消耗轮数
+ */
+export function getValidatorMaxTurns(issueCount: number): number {
+  const BASE_TURNS = 5;
+  const TURNS_PER_ISSUE = 5; // 对应 MAX_CHALLENGE_ROUNDS
+  const MIN_TURNS = 20;
+  const MAX_TURNS = 300;
+
+  // 验证输入：处理负数、NaN、Infinity 等无效值
+  if (!Number.isFinite(issueCount) || issueCount < 0) {
+    return MIN_TURNS;
+  }
+
+  const calculated = BASE_TURNS + issueCount * TURNS_PER_ISSUE;
+  return Math.max(MIN_TURNS, Math.min(MAX_TURNS, calculated));
+}
 
 /**
  * 专业 Agent 的默认最大轮数
