@@ -196,3 +196,11 @@ The following scenarios should NOT be reported as performance issues:
    - Clarity over micro-performance
    - Maintainability over optimization
    - Development speed over runtime speed (for non-critical paths)
+
+8. **Non-Actionable Reminders (Low-Value Issues)**
+   - Issues that only ask developers to "confirm business requirements"
+   - Suggestions like "please verify if performance matters here" without data
+   - Problems that need "confirmation" rather than "fixing"
+   - Descriptions without quantified performance impact (no numbers, no scale)
+   - Suggestions without executable code optimizations
+   - Behavior changes flagged without explaining the performance consequence

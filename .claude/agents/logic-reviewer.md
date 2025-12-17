@@ -196,3 +196,11 @@ The following scenarios should NOT be reported as logic issues:
    - Code guarded by feature flags that are disabled
    - Legacy code paths marked for removal
    - Branches that can't be reached due to earlier conditions
+
+8. **Non-Actionable Reminders (Low-Value Issues)**
+   - Issues that only ask developers to "confirm business requirements"
+   - Suggestions like "please verify the intended behavior" without bug evidence
+   - Problems that need "confirmation" rather than "fixing"
+   - Descriptions without concrete trigger conditions or reproduction steps
+   - Suggestions without executable code fixes
+   - Behavior changes flagged without explaining what breaks or misbehaves

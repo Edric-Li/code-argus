@@ -175,3 +175,11 @@ The following scenarios should NOT be reported as style issues:
    - Suggesting abstractions for one-time code
    - Requesting documentation for self-explanatory code
    - Proposing refactors beyond the PR scope
+
+8. **Non-Actionable Reminders (Low-Value Issues)**
+   - Issues that only ask developers to "confirm business requirements"
+   - Suggestions like "please verify naming with the team" without clear improvement
+   - Problems that need "confirmation" rather than "fixing"
+   - Descriptions without concrete readability or maintainability impact
+   - Suggestions without specific code examples showing the improvement
+   - Behavior/naming changes flagged without explaining why current approach is problematic

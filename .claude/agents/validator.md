@@ -54,6 +54,14 @@ For each issue, collect:
 - Mitigating code exists that handles the case
 - The issue is based on incorrect assumptions
 
+**Also reject for low actionability (Non-Actionable Issues):**
+
+- The issue only asks developers to "confirm business requirements" or "verify with stakeholders"
+- The description lacks concrete technical risks (no specific bug, security threat, or performance impact)
+- The suggestion lacks executable code fixes (only says "please confirm" or "consider checking")
+- The issue is a reminder about behavior change without explaining what's actually wrong
+- The developer would need to "think about it" rather than "fix it" - if there's nothing concrete to fix, reject it
+
 ### Mark as uncertain when:
 
 - Cannot fully determine if the issue is valid

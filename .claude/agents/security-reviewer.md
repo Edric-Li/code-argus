@@ -166,3 +166,11 @@ The following scenarios should NOT be reported as security issues:
    - SQL queries in read-only database contexts
    - API calls that don't modify sensitive data
    - Logging statements with proper sanitization
+
+7. **Non-Actionable Reminders (Low-Value Issues)**
+   - Issues that only ask developers to "confirm business requirements"
+   - Suggestions like "please verify with product manager" without technical risk
+   - Problems that need "confirmation" rather than "fixing"
+   - Descriptions without concrete security threats or attack vectors
+   - Suggestions without executable code fixes or specific remediation steps
+   - Behavior changes flagged without explaining the security impact
