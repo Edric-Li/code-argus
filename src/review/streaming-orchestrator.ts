@@ -140,6 +140,21 @@ export class StreamingReviewOrchestrator {
   }
 
   /**
+   * Create a logger adapter for worktree manager
+   * Routes worktree logs through the progress system for JSON log support
+   */
+  private createWorktreeLogger() {
+    return {
+      info: (message: string) => this.progress.info(message),
+      debug: (message: string) => {
+        if (this.options.verbose) {
+          console.log(message);
+        }
+      },
+    };
+  }
+
+  /**
    * Get current review state snapshot (for service integration)
    * Returns undefined if progress mode doesn't support state tracking
    */
@@ -310,7 +325,11 @@ export class StreamingReviewOrchestrator {
           `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
         );
       }
-      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch);
+
+      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch, 'origin', {
+        logger: this.createWorktreeLogger(),
+        verbose: this.options.verbose,
+      });
       worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
       this.progress.success(
         `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
@@ -882,7 +901,11 @@ export class StreamingReviewOrchestrator {
             `[StreamingOrchestrator] Getting/creating worktree for source ref: ${refDisplayStr}`
           );
         }
-        const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef);
+
+        const managedWorktree = getManagedWorktreeForRef(input.repoPath, sourceRef, {
+          logger: this.createWorktreeLogger(),
+          verbose: this.options.verbose,
+        });
         worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
         reviewRepoPath = worktreeInfo.worktreePath;
         this.progress.success(
