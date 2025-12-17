@@ -535,6 +535,12 @@ export interface OrchestratorOptions {
    * Set to false to skip fix verification even when previousReviewData is provided
    */
   verifyFixes?: boolean;
+  /**
+   * Require worktree for code review (default: false)
+   * When true, review will fail if worktree cannot be created
+   * This ensures agents read code from the correct branch/commit version
+   */
+  requireWorktree?: boolean;
 }
 
 /**

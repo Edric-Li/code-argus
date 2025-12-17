@@ -62,6 +62,7 @@ Options (review command):
   --verbose                Enable verbose output
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)
+  --require-worktree       Require worktree creation, fail if unable to create
 
 External Diff Options (for integration with PR systems):
   --diff-file=<path>       Read diff from file instead of computing from git
@@ -306,6 +307,7 @@ function parseOptions(args: string[]): {
   verbose: boolean;
   previousReview?: string;
   verifyFixes?: boolean;
+  requireWorktree?: boolean;
   externalDiff: ExternalDiffOptions;
 } {
   const options: {
@@ -318,6 +320,7 @@ function parseOptions(args: string[]): {
     verbose: boolean;
     previousReview?: string;
     verifyFixes?: boolean;
+    requireWorktree?: boolean;
     externalDiff: ExternalDiffOptions;
   } = {
     language: 'zh',
@@ -329,6 +332,7 @@ function parseOptions(args: string[]): {
     verbose: false,
     previousReview: undefined,
     verifyFixes: undefined,
+    requireWorktree: undefined,
     externalDiff: {},
   };
 
@@ -386,6 +390,8 @@ function parseOptions(args: string[]): {
       }
     } else if (arg === '--no-smart-merge-filter') {
       options.externalDiff.disableSmartMergeFilter = true;
+    } else if (arg === '--require-worktree') {
+      options.requireWorktree = true;
     }
   }
 
@@ -513,6 +519,8 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       // Fix verification options
       previousReviewData,
       verifyFixes: options.verifyFixes,
+      // Worktree requirement
+      requireWorktree: options.requireWorktree,
     },
   });
 
