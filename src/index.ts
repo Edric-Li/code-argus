@@ -24,6 +24,7 @@ initializeEnv();
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { execSync, spawnSync } from 'node:child_process';
 import {
   reviewByRefs,
   formatReport,
@@ -51,6 +52,82 @@ function getVersion(): string {
 }
 
 /**
+ * Get latest version from npm registry
+ */
+function getLatestVersion(): string | null {
+  try {
+    const result = execSync('npm view code-argus version', {
+      encoding: 'utf-8',
+      timeout: 10000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    return result.trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Compare two semver versions
+ * Returns: 1 if v1 > v2, -1 if v1 < v2, 0 if equal
+ */
+function compareVersions(v1: string, v2: string): number {
+  const parts1 = v1.split('.').map(Number);
+  const parts2 = v2.split('.').map(Number);
+
+  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+    const p1 = parts1[i] || 0;
+    const p2 = parts2[i] || 0;
+    if (p1 > p2) return 1;
+    if (p1 < p2) return -1;
+  }
+  return 0;
+}
+
+/**
+ * Run upgrade command
+ */
+function runUpgradeCommand(): void {
+  const currentVersion = getVersion();
+  console.log(`当前版本: v${currentVersion}`);
+  console.log('正在检查最新版本...');
+
+  const latestVersion = getLatestVersion();
+
+  if (!latestVersion) {
+    console.error('❌ 无法获取最新版本信息，请检查网络连接');
+    process.exit(1);
+  }
+
+  console.log(`最新版本: v${latestVersion}`);
+
+  if (currentVersion === 'unknown') {
+    console.log('\n⚠️  无法确定当前版本，尝试升级...');
+  } else if (compareVersions(latestVersion, currentVersion) <= 0) {
+    console.log('\n✅ 已经是最新版本！');
+    return;
+  }
+
+  console.log('\n正在升级...');
+
+  // Use spawnSync for better output handling
+  const result = spawnSync('npm', ['install', '-g', 'code-argus@latest'], {
+    stdio: 'inherit',
+    shell: true,
+  });
+
+  if (result.status === 0) {
+    console.log(`\n✅ 升级成功！v${currentVersion} -> v${latestVersion}`);
+  } else {
+    console.error('\n❌ 升级失败，请尝试手动执行: npm install -g code-argus@latest');
+    if (result.error) {
+      console.error('错误信息:', result.error.message);
+    }
+    process.exit(1);
+  }
+}
+
+/**
  * Print usage information
  */
 function printUsage(): void {
@@ -60,6 +137,7 @@ Usage: argus <command> [options]
 Commands:
   review <repo> <source> <target>    Run AI code review with multiple agents
   config                             Manage configuration (API key, base URL, model)
+  upgrade                            Upgrade to the latest version
 
 Global Options:
   -v, --version                      Show version number
@@ -602,6 +680,12 @@ export async function main(): Promise<void> {
   // Handle config command
   if (firstArg === 'config') {
     runConfigCommand(args.slice(1));
+    return;
+  }
+
+  // Handle upgrade command
+  if (firstArg === 'upgrade') {
+    runUpgradeCommand();
     return;
   }
 
