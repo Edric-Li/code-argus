@@ -1491,6 +1491,11 @@ export class StreamingReviewOrchestrator {
       let resolvedSourceRef: GitRef | undefined;
       if (sourceRefStr) {
         try {
+          // Fetch remote first to ensure we have the latest branch refs
+          // This is necessary because external diff mode skips getDiffByRefs which normally handles fetch
+          this.progress.progress('获取远程分支...');
+          fetchRemote(repoPath, 'origin');
+
           resolvedSourceRef = resolveRef(repoPath, sourceRefStr);
           if (this.options.verbose) {
             console.log(
@@ -1501,8 +1506,12 @@ export class StreamingReviewOrchestrator {
           const errorMsg = error instanceof Error ? error.message : String(error);
           // If requireWorktree is enabled, fail immediately
           if (this.options.requireWorktree) {
+            // Provide helpful error message - branch may have been deleted after PR merge
+            const hint = errorMsg.includes('Branch not found')
+              ? ' (分支可能已在 PR 合并后被删除)'
+              : '';
             throw new Error(
-              `Worktree required but failed to resolve sourceRef "${sourceRefStr}": ${errorMsg}`
+              `Worktree required but failed to resolve sourceRef "${sourceRefStr}": ${errorMsg}${hint}`
             );
           }
           // Otherwise log warning and continue without worktree
