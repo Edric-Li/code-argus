@@ -78,6 +78,8 @@ import {
 import { createRealtimeDeduplicator, type RealtimeDeduplicator } from './realtime-deduplicator.js';
 import { executeFixVerifier } from './fix-verifier.js';
 import type { FixVerificationSummary, PreviousReviewData } from './types.js';
+import { preprocessDiff, formatDeletedFilesContext, needsSegmentation } from '../diff/index.js';
+import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
 
 /**
  * Default orchestrator options
@@ -1001,6 +1003,26 @@ export class StreamingReviewOrchestrator {
             },
           });
 
+      // Check if diff needs segmentation (large PR handling)
+      const diffSize = Buffer.byteLength(context.diff.diff, 'utf8');
+      const segmentSizeLimit = 150 * 1024; // 150KB
+
+      if (needsSegmentation(diffSize, { segmentSizeLimit })) {
+        this.progress.info(
+          `检测到大型 PR: ${(diffSize / 1024).toFixed(1)}KB 超过 ${segmentSizeLimit / 1024}KB 限制，启动分段审核...`
+        );
+
+        // Execute segmented review
+        return await this.runSegmentedReview({
+          context,
+          diffFiles,
+          reviewRepoPath,
+          agentsToRun,
+          startTime,
+          segmentSizeLimit,
+        });
+      }
+
       // Phase 2: Run ALL agents in parallel (built-in + custom + fix verifier)
       // Determine if fix verification should run
       const previousReviewData = this.options.previousReviewData;
@@ -1458,9 +1480,23 @@ export class StreamingReviewOrchestrator {
 
     if (externalDiffContent !== null) {
       // External diff mode - skip git diff computation
-      this.progress.progress('解析外部 diff...');
-      const diffFiles = parseDiff(externalDiffContent);
-      this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+      // Step 1: 预处理 - 过滤删除文件（通用规则）
+      this.progress.progress('预处理 diff（过滤删除文件）...');
+      const preprocessed = preprocessDiff(externalDiffContent, { verbose: this.options.verbose });
+      const deletedFiles = preprocessed.deletedFiles;
+
+      if (deletedFiles.length > 0) {
+        this.progress.info(
+          `过滤删除文件: ${deletedFiles.length} 个, 节省 ${(preprocessed.stats.savedBytes / 1024).toFixed(1)}KB`
+        );
+      }
+
+      // Step 2: 解析处理后的 diff
+      this.progress.progress('解析 diff...');
+      const diffFiles = preprocessed.diffFiles;
+      this.progress.success(
+        `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件)`
+      );
 
       // Local diff analysis (fast, no LLM)
       this.progress.progress('分析变更...');
@@ -1476,9 +1512,9 @@ export class StreamingReviewOrchestrator {
       const standards = await createStandards(repoPath);
       this.progress.success('项目标准提取完成');
 
-      // Create a synthetic DiffResult for external diff
+      // Create a synthetic DiffResult for external diff (using preprocessed content)
       const diffResult = {
-        diff: externalDiffContent,
+        diff: preprocessed.processedDiff,
         sourceBranch: sourceRefStr || 'external',
         targetBranch: targetRefStr || 'external',
         repoPath: resolve(repoPath),
@@ -1536,6 +1572,7 @@ export class StreamingReviewOrchestrator {
           fileAnalyses: analysisResult.changes,
           standards,
           diffFiles,
+          deletedFiles, // 删除文件列表（只传路径，供 logic-reviewer 上下文）
         },
         diffFiles,
         sourceRef: resolvedSourceRef,
@@ -1566,19 +1603,38 @@ export class StreamingReviewOrchestrator {
     }
 
     this.progress.progress('获取 diff...');
-    const diffResult = getDiffByRefs({
+    const rawDiffResult = getDiffByRefs({
       sourceRef: sourceRefStr,
       targetRef: targetRefStr,
       repoPath,
       skipFetch: false, // Let getDiffByRefs handle smart fetch logic
       smartMergeFilter: !externalDiff?.disableSmartMergeFilter, // Use smart filtering by default
     });
-    const diffSizeKB = Math.round(diffResult.diff.length / 1024);
+    const diffSizeKB = Math.round(rawDiffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
 
-    this.progress.progress('解析 diff...');
-    const diffFiles = parseDiff(diffResult.diff);
-    this.progress.success(`解析完成 (${diffFiles.length} 个文件)`);
+    // 预处理 - 过滤删除文件（通用规则）
+    this.progress.progress('预处理 diff（过滤删除文件）...');
+    const preprocessed = preprocessDiff(rawDiffResult.diff, { verbose: this.options.verbose });
+    const deletedFiles = preprocessed.deletedFiles;
+
+    if (deletedFiles.length > 0) {
+      this.progress.info(
+        `过滤删除文件: ${deletedFiles.length} 个, 节省 ${(preprocessed.stats.savedBytes / 1024).toFixed(1)}KB`
+      );
+    }
+
+    // 使用预处理后的 diff 文件列表
+    const diffFiles = preprocessed.diffFiles;
+    this.progress.success(
+      `解析完成 (${diffFiles.length} 个文件, 排除 ${deletedFiles.length} 个删除文件)`
+    );
+
+    // 更新 diffResult 使用处理后的 diff
+    const diffResult = {
+      ...rawDiffResult,
+      diff: preprocessed.processedDiff,
+    };
 
     // Local diff analysis (fast, no LLM)
     this.progress.progress('分析变更...');
@@ -1601,11 +1657,12 @@ export class StreamingReviewOrchestrator {
         fileAnalyses: analysisResult.changes,
         standards,
         diffFiles, // Include parsed diff files for filtering
+        deletedFiles, // 删除文件列表（只传路径，供 logic-reviewer 上下文）
       },
       diffFiles,
-      sourceRef: diffResult.sourceRef!,
-      targetRef: diffResult.targetRef!,
-      reviewMode: diffResult.mode || 'branch',
+      sourceRef: rawDiffResult.sourceRef!,
+      targetRef: rawDiffResult.targetRef!,
+      reviewMode: rawDiffResult.mode || 'branch',
     };
   }
 
@@ -1999,6 +2056,13 @@ Write all text (title, description, suggestion) in Chinese.`,
 
     // Build prompts
     const systemPrompt = buildStreamingSystemPrompt(agentType);
+
+    // Only add deleted files context for logic-reviewer (to understand code removal context)
+    const deletedFilesContext =
+      agentType === 'logic-reviewer' && context.deletedFiles && context.deletedFiles.length > 0
+        ? formatDeletedFilesContext(context.deletedFiles)
+        : undefined;
+
     const userPrompt = buildStreamingUserPrompt(agentType, {
       diff: context.diff.diff,
       fileAnalyses: context.fileAnalyses
@@ -2008,6 +2072,7 @@ Write all text (title, description, suggestion) in Chinese.`,
       projectRules: projectRules
         ? `## Project-Specific Review Guidelines\n\n> Loaded from: ${this.rulesConfig.sources.join(', ')}\n\n${projectRules}`
         : undefined,
+      deletedFilesContext,
     });
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
@@ -2065,6 +2130,8 @@ Write all text (title, description, suggestion) in Chinese.`,
       }
     } catch (error) {
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
+      // Re-throw the error so it's properly handled by the caller
+      throw error;
     }
 
     // 详细日志：Agent 完成汇总
@@ -2081,6 +2148,189 @@ Write all text (title, description, suggestion) in Chinese.`,
       tokensUsed,
       checklists: [],
     };
+  }
+
+  /**
+   * Run segmented review for large PRs
+   * Splits diff into manageable segments and reviews each in parallel
+   */
+  private async runSegmentedReview(params: {
+    context: ReviewContext;
+    diffFiles: DiffFile[];
+    reviewRepoPath: string;
+    agentsToRun: AgentType[];
+    startTime: number;
+    segmentSizeLimit: number;
+  }): Promise<ReviewReport> {
+    const { context, diffFiles, reviewRepoPath, agentsToRun, startTime, segmentSizeLimit } = params;
+
+    // Execute segmentation
+    this.progress.progress('执行智能分段...');
+    const segmentResult = segmentDiff(diffFiles, { segmentSizeLimit });
+
+    this.progress.success(
+      `分段完成: ${segmentResult.segments.length} 个分段 (${segmentResult.strategy})`
+    );
+    this.progress.info(`分段策略: ${segmentResult.reason}`);
+
+    // Show segment details
+    for (let i = 0; i < segmentResult.segments.length; i++) {
+      const segment = segmentResult.segments[i]!;
+      this.progress.info(
+        `  分段 ${i + 1}: ${segment.name} (${segment.files.length} 文件, ${(segment.size / 1024).toFixed(1)}KB)`
+      );
+    }
+
+    // Phase 2: Run agents for each segment in parallel
+    const totalSegments = segmentResult.segments.length;
+    this.progress.phase(2, 4, `运行 ${agentsToRun.length} 个 Agents × ${totalSegments} 分段...`);
+
+    // Create segment review promises
+    const segmentPromises = segmentResult.segments.map(async (segment, index) => {
+      const segmentLabel = `分段${index + 1}/${totalSegments}`;
+      this.progress.info(`[${segmentLabel}] 开始审核: ${segment.name}`);
+
+      // Create segment-specific context
+      const segmentDiff = rebuildDiffFromSegment(segment);
+      const segmentContext: ReviewContext = {
+        ...context,
+        diff: {
+          ...context.diff,
+          diff: segmentDiff,
+        },
+        diffFiles: segment.files,
+        // Keep deletedFiles from original context for logic-reviewer
+        deletedFiles: context.deletedFiles,
+      };
+
+      // Run agents for this segment
+      try {
+        const result = await this.runAgentsWithStreaming(
+          segmentContext,
+          reviewRepoPath,
+          agentsToRun
+        );
+        this.progress.success(`[${segmentLabel}] 完成: ${segment.name}`);
+        return { segment, result, error: null };
+      } catch (error) {
+        this.progress.error(`[${segmentLabel}] 失败: ${segment.name} - ${error}`);
+        return { segment, result: null, error };
+      }
+    });
+
+    // Wait for all segments to complete
+    const segmentResults = await Promise.all(segmentPromises);
+
+    // Collect results from all segments
+    let totalTokens = 0;
+    const allChecklists: ChecklistItem[] = [];
+    const failedSegments: string[] = [];
+
+    for (const { segment, result, error } of segmentResults) {
+      if (result) {
+        totalTokens += result.tokens;
+        allChecklists.push(...result.checklists);
+      } else if (error) {
+        failedSegments.push(segment.name);
+      }
+    }
+
+    if (failedSegments.length > 0) {
+      this.progress.warn(`部分分段审核失败: ${failedSegments.join(', ')}`);
+    }
+
+    // Phase 3: Wait for validations (if validator exists)
+    this.progress.phase(3, 4, '等待验证完成...');
+
+    let validatedIssues: ValidatedIssue[] = [];
+    if (this.streamingValidator) {
+      const statusInterval = globalThis.setInterval(() => {
+        const stats = this.streamingValidator?.getStats();
+        if (stats && stats.total > 0) {
+          this.progress.progress(
+            `验证进度: ${stats.completed}/${stats.total} (${stats.activeSessions} 个活跃会话)`
+          );
+        }
+      }, 5000);
+
+      try {
+        const validationResult = await this.streamingValidator.flush();
+        validatedIssues = [...validationResult.issues, ...this.autoRejectedIssues];
+        totalTokens += validationResult.tokensUsed;
+      } finally {
+        globalThis.clearInterval(statusInterval);
+      }
+
+      const confirmed = validatedIssues.filter((i) => i.validation_status === 'confirmed').length;
+      const rejected = validatedIssues.filter((i) => i.validation_status === 'rejected').length;
+      this.progress.success(`验证完成: ${confirmed} 确认, ${rejected} 拒绝`);
+    } else if (this.options.skipValidation) {
+      // Use raw issues when validation is skipped
+      validatedIssues = this.rawIssuesForSkipMode.map((issue) => ({
+        ...issue,
+        validation_status: 'pending' as const,
+        grounding_evidence: {
+          checked_files: [],
+          checked_symbols: [],
+          related_context: '跳过验证',
+          reasoning: '用户选择跳过验证',
+        },
+        final_confidence: issue.confidence,
+      }));
+    }
+
+    // Phase 4: Generate report
+    this.progress.phase(4, 4, '生成报告...');
+
+    const aggregationResult = aggregate(validatedIssues, allChecklists);
+    const aggregatedIssues = aggregationResult.issues;
+    const aggregatedChecklist = aggregationResult.checklist;
+
+    const metrics = calculateMetrics(
+      validatedIssues.map((i) => ({
+        id: i.id,
+        file: i.file,
+        line_start: i.line_start,
+        line_end: i.line_end,
+        category: i.category,
+        severity: i.severity,
+        title: i.title,
+        description: i.description,
+        confidence: i.confidence,
+        source_agent: i.source_agent,
+      })),
+      aggregatedIssues,
+      diffFiles.length
+    );
+
+    const endTime = Date.now();
+    const metadata = {
+      review_time_ms: endTime - startTime,
+      tokens_used: totalTokens,
+      agents_used: agentsToRun,
+    };
+
+    const report = generateReport(
+      aggregatedIssues,
+      aggregatedChecklist,
+      metrics,
+      context,
+      metadata,
+      'zh',
+      this.fixVerificationResults
+    );
+
+    // Add segmentation info to report
+    (report as ReviewReport & { segmentation?: unknown }).segmentation = {
+      enabled: true,
+      totalSegments,
+      strategy: segmentResult.strategy,
+      failedSegments: failedSegments.length,
+    };
+
+    this.progress.complete(report.issues.length, endTime - startTime);
+
+    return report;
   }
 }
 

@@ -199,6 +199,8 @@ export function buildStreamingUserPrompt(
     standardsText?: string;
     /** Custom project-specific rules for this agent */
     projectRules?: string;
+    /** Deleted files context (only file paths, content removed) - only for logic-reviewer */
+    deletedFilesContext?: string;
   }
 ): string {
   const sections: string[] = [];
@@ -219,6 +221,12 @@ export function buildStreamingUserPrompt(
   // Add project-specific rules (from --rules-dir)
   if (params.projectRules) {
     sections.push(params.projectRules);
+    sections.push('');
+  }
+
+  // Add deleted files context (for logic-reviewer to understand context)
+  if (params.deletedFilesContext) {
+    sections.push(params.deletedFilesContext);
     sections.push('');
   }
 

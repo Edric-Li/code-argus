@@ -267,6 +267,8 @@ export interface ReviewContext {
   standards: ProjectStandards;
   /** Parsed diff files (with whitespace-only change detection) */
   diffFiles?: DiffFile[];
+  /** Deleted files list (content removed, only paths preserved for context) */
+  deletedFiles?: string[];
 }
 
 // ============================================================================
