@@ -133,11 +133,17 @@ export function getCommitsBetween(
  *
  * @param repoPath - Path to the git repository
  * @param ref - Reference string (branch name or commit SHA)
- * @param remote - Remote name (default: 'origin', only used for branches)
+ * @param remote - Remote name (default: 'origin', only used for branches in remote mode)
+ * @param local - Use local branches instead of remote branches (default: false)
  * @returns Resolved GitRef
  * @throws {GitError} If reference cannot be resolved
  */
-export function resolveRef(repoPath: string, ref: string, remote: string = 'origin'): GitRef {
+export function resolveRef(
+  repoPath: string,
+  ref: string,
+  remote: string = 'origin',
+  local: boolean = false
+): GitRef {
   const type = detectRefType(ref);
 
   if (type === 'commit') {
@@ -149,30 +155,57 @@ export function resolveRef(repoPath: string, ref: string, remote: string = 'orig
       resolvedSha,
     };
   } else {
-    // Branch: resolve remote branch SHA
+    // Branch: resolve branch SHA
     const absolutePath = resolve(repoPath);
-    const remoteRef = `${remote}/${ref}`;
 
-    try {
-      const resolvedSha = execSync(`git rev-parse ${remoteRef}`, {
-        cwd: absolutePath,
-        encoding: 'utf-8',
-        stdio: 'pipe',
-      }).trim();
+    if (local) {
+      // Local mode: use local branch directly
+      try {
+        const resolvedSha = execSync(`git rev-parse ${ref}`, {
+          cwd: absolutePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        }).trim();
 
-      return {
-        type: 'branch',
-        value: ref,
-        resolvedSha,
-        remote,
-      };
-    } catch (error: unknown) {
-      const err = error as { stderr?: string; message?: string };
-      throw new GitError(
-        `Branch not found: ${remoteRef}`,
-        'BRANCH_NOT_FOUND',
-        err.stderr || err.message
-      );
+        return {
+          type: 'branch',
+          value: ref,
+          resolvedSha,
+          // No remote in local mode
+        };
+      } catch (error: unknown) {
+        const err = error as { stderr?: string; message?: string };
+        throw new GitError(
+          `Local branch not found: ${ref}`,
+          'BRANCH_NOT_FOUND',
+          err.stderr || err.message
+        );
+      }
+    } else {
+      // Remote mode: use remote/branch
+      const remoteRef = `${remote}/${ref}`;
+
+      try {
+        const resolvedSha = execSync(`git rev-parse ${remoteRef}`, {
+          cwd: absolutePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        }).trim();
+
+        return {
+          type: 'branch',
+          value: ref,
+          resolvedSha,
+          remote,
+        };
+      } catch (error: unknown) {
+        const err = error as { stderr?: string; message?: string };
+        throw new GitError(
+          `Branch not found: ${remoteRef}`,
+          'BRANCH_NOT_FOUND',
+          err.stderr || err.message
+        );
+      }
     }
   }
 }

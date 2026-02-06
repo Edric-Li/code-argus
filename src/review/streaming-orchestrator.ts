@@ -85,12 +85,24 @@ import { segmentDiff, rebuildDiffFromSegment } from '../diff/index.js';
  * Default orchestrator options
  */
 const DEFAULT_OPTIONS: Required<
-  Omit<OrchestratorOptions, 'onEvent' | 'previousReviewData' | 'verifyFixes' | 'requireWorktree'>
+  Omit<
+    OrchestratorOptions,
+    | 'onEvent'
+    | 'previousReviewData'
+    | 'verifyFixes'
+    | 'requireWorktree'
+    | 'prContext'
+    | 'local'
+    | 'abortController'
+  >
 > & {
   onEvent?: OrchestratorOptions['onEvent'];
   previousReviewData?: PreviousReviewData;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
+  prContext?: OrchestratorOptions['prContext'];
+  local?: boolean;
+  abortController?: AbortController;
 } = {
   maxConcurrency: 4,
   verbose: false,
@@ -107,6 +119,9 @@ const DEFAULT_OPTIONS: Required<
   previousReviewData: undefined,
   verifyFixes: undefined,
   requireWorktree: false,
+  prContext: undefined,
+  local: false,
+  abortController: undefined,
 };
 
 /**
@@ -132,6 +147,8 @@ export class StreamingReviewOrchestrator {
   private rawIssuesForSkipMode: RawIssue[] = [];
   private loadedCustomAgents: LoadedCustomAgent[] = [];
   private fixVerificationResults?: FixVerificationSummary;
+  /** Track issue count per agent for progress reporting */
+  private issueCountByAgent: Map<string, number> = new Map();
 
   constructor(options?: OrchestratorOptions) {
     this.options = { ...DEFAULT_OPTIONS, ...options };
@@ -324,31 +341,45 @@ export class StreamingReviewOrchestrator {
       }
 
       // Get or create managed worktree (reuses existing if available)
-      this.progress.progress(`准备 worktree: ${input.sourceBranch}...`);
-      if (this.options.verbose) {
-        console.log(
-          `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
+      // In local mode, use repo directly (skip worktree creation)
+      let reviewRepoPath: string;
+
+      if (this.options.local) {
+        // Local mode - use repo directly
+        this.progress.progress('本地模式: 使用仓库目录进行审查...');
+        reviewRepoPath = resolve(input.repoPath);
+        this.progress.success(`使用仓库目录: ${reviewRepoPath}`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Using repo directly (local mode): ${reviewRepoPath}`
+          );
+        }
+      } else {
+        this.progress.progress(`准备 worktree: ${input.sourceBranch}...`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Getting/creating worktree for source branch: ${input.sourceBranch}`
+          );
+        }
+
+        const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch, 'origin', {
+          logger: this.createWorktreeLogger(),
+          verbose: this.options.verbose,
+        });
+        worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
+        reviewRepoPath = worktreeInfo.worktreePath;
+        this.progress.success(
+          `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
         );
+        if (this.options.verbose) {
+          console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
+        }
       }
-
-      const managedWorktree = getManagedWorktree(input.repoPath, input.sourceBranch, 'origin', {
-        logger: this.createWorktreeLogger(),
-        verbose: this.options.verbose,
-      });
-      worktreeInfo = managedWorktree; // ManagedWorktreeInfo is compatible with WorktreeInfo
-      this.progress.success(
-        `Worktree ${managedWorktree.reused ? '已复用' : '已创建'}: ${worktreeInfo.worktreePath}`
-      );
-      if (this.options.verbose) {
-        console.log(`[StreamingOrchestrator] Worktree created at: ${worktreeInfo.worktreePath}`);
-      }
-
-      // Update context to use worktree path for agent execution
-      const reviewRepoPath = worktreeInfo.worktreePath;
 
       // Reset state for this review
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
+      this.issueCountByAgent.clear();
 
       // Create realtime deduplicator with progress callbacks
       this.realtimeDeduplicator = createRealtimeDeduplicator({
@@ -898,6 +929,16 @@ export class StreamingReviewOrchestrator {
             `[StreamingOrchestrator] Using repo directly (external diff mode): ${reviewRepoPath}`
           );
         }
+      } else if (this.options.local) {
+        // Local mode - use repo directly (skip worktree creation)
+        this.progress.progress('本地模式: 使用仓库目录进行审查...');
+        reviewRepoPath = resolve(input.repoPath);
+        this.progress.success(`使用仓库目录: ${reviewRepoPath}`);
+        if (this.options.verbose) {
+          console.log(
+            `[StreamingOrchestrator] Using repo directly (local mode): ${reviewRepoPath}`
+          );
+        }
       } else if (sourceRef) {
         // Normal mode - create worktree
         const refDisplayStr = getRefDisplayString(sourceRef, input.repoPath);
@@ -935,6 +976,7 @@ export class StreamingReviewOrchestrator {
       // Reset state for this review
       this.autoRejectedIssues = [];
       this.rawIssuesForSkipMode = [];
+      this.issueCountByAgent.clear();
 
       // Create realtime deduplicator with progress callbacks
       this.realtimeDeduplicator = createRealtimeDeduplicator({
@@ -1006,6 +1048,43 @@ export class StreamingReviewOrchestrator {
       // Check if diff needs segmentation (large PR handling)
       const diffSize = Buffer.byteLength(context.diff.diff, 'utf8');
       const segmentSizeLimit = 150 * 1024; // 150KB
+      const maxDiffSize = 1 * 1024 * 1024; // 1MB - skip review if diff is too large
+
+      // Skip review if diff is too large (prevent OOM)
+      if (diffSize > maxDiffSize) {
+        const diffSizeMB = (diffSize / 1024 / 1024).toFixed(2);
+        const skipReason = `PR diff 过大 (${diffSizeMB}MB > 1MB 限制)，跳过审核以防止内存溢出`;
+        this.progress.warn(skipReason);
+        console.warn(`[StreamingOrchestrator] ${skipReason}`);
+
+        // Return a skipped review report
+        return {
+          summary: skipReason,
+          risk_level: 'low' as const,
+          issues: [],
+          checklist: [],
+          metrics: {
+            total_scanned: 0,
+            confirmed: 0,
+            rejected: 0,
+            uncertain: 0,
+            by_severity: { critical: 0, error: 0, warning: 0, suggestion: 0 },
+            by_category: {
+              logic: 0,
+              security: 0,
+              performance: 0,
+              style: 0,
+              maintainability: 0,
+            },
+            files_reviewed: 0,
+          },
+          metadata: {
+            review_time_ms: Date.now() - startTime,
+            tokens_used: 0,
+            agents_used: [],
+          },
+        };
+      }
 
       if (needsSegmentation(diffSize, { segmentSizeLimit })) {
         this.progress.info(
@@ -1314,12 +1393,15 @@ export class StreamingReviewOrchestrator {
     const { sourceBranch, targetBranch, repoPath } = input;
     const remote = 'origin';
 
-    this.progress.progress('获取远程 refs...');
-    if (this.options.verbose) {
-      console.log('[StreamingOrchestrator] Fetching remote refs...');
+    // Skip fetch in local mode
+    if (!this.options.local) {
+      this.progress.progress('获取远程 refs...');
+      if (this.options.verbose) {
+        console.log('[StreamingOrchestrator] Fetching remote refs...');
+      }
+      fetchRemote(repoPath, remote);
+      this.progress.success('获取远程 refs 完成');
     }
-    fetchRemote(repoPath, remote);
-    this.progress.success('获取远程 refs 完成');
 
     this.progress.progress('获取 diff...');
     const diffResult = getDiffWithOptions({
@@ -1327,6 +1409,7 @@ export class StreamingReviewOrchestrator {
       targetBranch,
       repoPath,
       skipFetch: true,
+      local: this.options.local,
     });
     const diffSizeKB = Math.round(diffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
@@ -1349,6 +1432,13 @@ export class StreamingReviewOrchestrator {
     const standards = await createStandards(repoPath);
     this.progress.success('项目标准提取完成');
 
+    // Log PR context if present
+    if (this.options.prContext && this.options.prContext.jiraIssues?.length > 0) {
+      this.progress.info(
+        `PR Context: ${this.options.prContext.jiraIssues.length} Jira issue(s) - ${this.options.prContext.jiraIssues.map((i) => i.key).join(', ')}`
+      );
+    }
+
     return {
       context: {
         repoPath,
@@ -1356,6 +1446,7 @@ export class StreamingReviewOrchestrator {
         fileAnalyses: analysisResult.changes,
         standards,
         diffFiles, // Include parsed diff files for filtering
+        prContext: this.options.prContext,
       },
       diffFiles,
     };
@@ -1527,12 +1618,46 @@ export class StreamingReviewOrchestrator {
       let resolvedSourceRef: GitRef | undefined;
       if (sourceRefStr) {
         try {
-          // Fetch remote first to ensure we have the latest branch refs
-          // This is necessary because external diff mode skips getDiffByRefs which normally handles fetch
-          this.progress.progress('获取远程分支...');
-          fetchRemote(repoPath, 'origin');
+          // Smart fetch logic for external diff mode (similar to getDiffByRefs)
+          // For commit SHAs, check if they exist locally first before fetching
+          // For branches, always fetch to get latest refs
+          if (!this.options.local) {
+            const refType = detectRefType(sourceRefStr);
+            if (refType === 'commit') {
+              // For commits: check existence first, only fetch if not found
+              let commitExists = false;
+              try {
+                execSync(`git cat-file -t ${sourceRefStr}`, {
+                  cwd: repoPath,
+                  encoding: 'utf-8',
+                  stdio: 'pipe',
+                });
+                commitExists = true;
+              } catch {
+                // Commit not found locally
+              }
 
-          resolvedSourceRef = resolveRef(repoPath, sourceRefStr);
+              if (!commitExists) {
+                this.progress.progress('获取远程 commits...');
+                if (this.options.verbose) {
+                  console.log(
+                    `[StreamingOrchestrator] Commit ${sourceRefStr.slice(0, 7)} not found locally, fetching from remote...`
+                  );
+                }
+                fetchRemote(repoPath, 'origin');
+              } else if (this.options.verbose) {
+                console.log(
+                  `[StreamingOrchestrator] Commit ${sourceRefStr.slice(0, 7)} exists locally, skipping fetch`
+                );
+              }
+            } else {
+              // For branches: always fetch to ensure we have latest refs
+              this.progress.progress('获取远程分支...');
+              fetchRemote(repoPath, 'origin');
+            }
+          }
+
+          resolvedSourceRef = resolveRef(repoPath, sourceRefStr, 'origin', this.options.local);
           if (this.options.verbose) {
             console.log(
               `[StreamingOrchestrator] External diff mode with sourceRef: ${sourceRefStr} → worktree will be created`
@@ -1573,6 +1698,7 @@ export class StreamingReviewOrchestrator {
           standards,
           diffFiles,
           deletedFiles, // 删除文件列表（只传路径，供 logic-reviewer 上下文）
+          prContext: this.options.prContext,
         },
         diffFiles,
         sourceRef: resolvedSourceRef,
@@ -1609,6 +1735,7 @@ export class StreamingReviewOrchestrator {
       repoPath,
       skipFetch: false, // Let getDiffByRefs handle smart fetch logic
       smartMergeFilter: !externalDiff?.disableSmartMergeFilter, // Use smart filtering by default
+      local: this.options.local, // Pass local option
     });
     const diffSizeKB = Math.round(rawDiffResult.diff.length / 1024);
     this.progress.success(`获取 diff 完成 (${diffSizeKB} KB)`);
@@ -1658,6 +1785,7 @@ export class StreamingReviewOrchestrator {
         standards,
         diffFiles, // Include parsed diff files for filtering
         deletedFiles, // 删除文件列表（只传路径，供 logic-reviewer 上下文）
+        prContext: this.options.prContext,
       },
       diffFiles,
       sourceRef: rawDiffResult.sourceRef!,
@@ -1810,7 +1938,9 @@ export class StreamingReviewOrchestrator {
         totalTokens += res.result.tokensUsed;
         allChecklists.push(...res.result.checklists);
 
-        this.progress.agent(res.agentType, 'completed', elapsedStr);
+        // Get issue count for this agent
+        const issueCount = this.issueCountByAgent.get(res.agentType) || 0;
+        this.progress.agent(res.agentType, 'completed', `${issueCount} issues, ${elapsedStr}`);
 
         if (this.options.verbose) {
           console.log(`[StreamingOrchestrator] Agent ${res.agentType} completed in ${elapsedStr}`);
@@ -2004,6 +2134,10 @@ Write all text (title, description, suggestion) in Chinese.`,
                 }
               }
 
+              // Track issue count per agent (for progress reporting)
+              const currentCount = this.issueCountByAgent.get(agentType) || 0;
+              this.issueCountByAgent.set(agentType, currentCount + 1);
+
               // Step 2: Process accepted issue
               if (skipValidation) {
                 // Skip validation mode - just collect issues
@@ -2063,6 +2197,13 @@ Write all text (title, description, suggestion) in Chinese.`,
         ? formatDeletedFilesContext(context.deletedFiles)
         : undefined;
 
+    // Log PR context injection for this agent
+    if (context.prContext?.jiraIssues?.length) {
+      this.progress.info(
+        `[${agentType}] 注入 PR Context: ${context.prContext.jiraIssues.length} 个 Jira issue - ${context.prContext.jiraIssues.map((i) => i.key).join(', ')}`
+      );
+    }
+
     const userPrompt = buildStreamingUserPrompt(agentType, {
       diff: context.diff.diff,
       fileAnalyses: context.fileAnalyses
@@ -2073,6 +2214,7 @@ Write all text (title, description, suggestion) in Chinese.`,
         ? `## Project-Specific Review Guidelines\n\n> Loaded from: ${this.rulesConfig.sources.join(', ')}\n\n${projectRules}`
         : undefined,
       deletedFilesContext,
+      prContext: context.prContext,
     });
 
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
@@ -2083,8 +2225,11 @@ Write all text (title, description, suggestion) in Chinese.`,
     let tokensUsed = 0;
     let turnCount = 0;
 
+    // 用于资源清理的变量
+    let queryStream: ReturnType<typeof query> | null = null;
+
     try {
-      const queryStream = query({
+      queryStream = query({
         prompt: fullPrompt,
         options: {
           cwd: reviewRepoPath,
@@ -2096,6 +2241,8 @@ Write all text (title, description, suggestion) in Chinese.`,
           mcpServers: {
             'code-review-tools': mcpServer,
           },
+          // 传递 AbortController 以支持优雅关闭
+          abortController: this.options.abortController,
         },
       });
 
@@ -2129,9 +2276,29 @@ Write all text (title, description, suggestion) in Chinese.`,
         }
       }
     } catch (error) {
+      // 检查是否是 AbortError（用户取消操作）
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log(`[StreamingOrchestrator] Agent ${agentType} aborted by user`);
+        // 不重新抛出 AbortError，让调用方优雅处理
+        return { tokensUsed, checklists: [] };
+      }
       console.error(`[StreamingOrchestrator] Agent ${agentType} threw error:`, error);
       // Re-throw the error so it's properly handled by the caller
       throw error;
+    } finally {
+      // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
+      if (queryStream) {
+        try {
+          // 调用迭代器的 return() 方法触发 SDK 内部的 cleanup
+          // 这会导致 transport.close() 被调用，从而移除 process.on('exit') 监听器
+          await queryStream.return?.(undefined);
+        } catch (cleanupError) {
+          // 忽略清理过程中的错误，避免覆盖原始错误
+          if (this.options.verbose) {
+            console.warn(`[StreamingOrchestrator] Cleanup warning for ${agentType}:`, cleanupError);
+          }
+        }
+      }
     }
 
     // 详细日志：Agent 完成汇总

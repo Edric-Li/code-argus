@@ -40,6 +40,11 @@ export interface DiffOptions {
   remote?: string;
   /** Skip git fetch (useful when fetch was already done) */
   skipFetch?: boolean;
+  /**
+   * Use local branches instead of remote branches (default: false)
+   * When true, branches are resolved without 'origin/' prefix.
+   */
+  local?: boolean;
 }
 
 /**
@@ -52,7 +57,7 @@ export interface DiffByRefsOptions {
   sourceRef: string;
   /** Target reference (branch name or commit SHA) */
   targetRef: string;
-  /** Remote name to use (defaults to 'origin', only used for branches) */
+  /** Remote name to use (defaults to 'origin', only used for branches in remote mode) */
   remote?: string;
   /** Skip git fetch (useful when fetch was already done, only affects branches) */
   skipFetch?: boolean;
@@ -62,6 +67,12 @@ export interface DiffByRefsOptions {
    * only showing actual development changes.
    */
   smartMergeFilter?: boolean;
+  /**
+   * Use local branches instead of remote branches (default: false)
+   * When true, branches are resolved without 'origin/' prefix,
+   * allowing review of local branches that haven't been pushed.
+   */
+  local?: boolean;
 }
 
 /**

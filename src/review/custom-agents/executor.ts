@@ -256,8 +256,14 @@ export async function executeCustomAgent(
 
   let tokensUsed = 0;
 
+  // 用于资源清理的变量
+  let queryStream: ReturnType<typeof query> | null = null;
+  // 信号处理器引用（需要在 try 外声明以便 finally 访问）
+  let sigtermHandler: (() => void) | null = null;
+  let sigintHandler: (() => void) | null = null;
+
   try {
-    const queryStream = query({
+    queryStream = query({
       prompt: fullPrompt,
       options: {
         cwd: options.repoPath,
@@ -270,6 +276,24 @@ export async function executeCustomAgent(
         },
       },
     });
+
+    // 注册信号处理器，确保 SIGTERM/SIGINT 时能正确清理资源
+    let isCleaningUp = false;
+    const cleanupAndExit = async (signal: string) => {
+      if (isCleaningUp || !queryStream) return;
+      isCleaningUp = true;
+      console.log(`[CustomAgentExecutor:${agent.name}] Received ${signal}, cleaning up...`);
+      try {
+        await queryStream.return?.(undefined);
+      } catch {
+        // 忽略清理错误
+      }
+      process.exit(0);
+    };
+    sigtermHandler = () => cleanupAndExit('SIGTERM');
+    sigintHandler = () => cleanupAndExit('SIGINT');
+    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', sigintHandler);
 
     // Consume the stream
     for await (const message of queryStream) {
@@ -322,6 +346,24 @@ export async function executeCustomAgent(
       execution_time_ms: Date.now() - startTime,
       error: errorMessage,
     };
+  } finally {
+    // 先移除信号处理器，防止 finally 清理时触发
+    if (sigtermHandler) process.off('SIGTERM', sigtermHandler);
+    if (sigintHandler) process.off('SIGINT', sigintHandler);
+
+    // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
+    if (queryStream) {
+      try {
+        await queryStream.return?.(undefined);
+      } catch (cleanupError) {
+        if (options.verbose) {
+          console.warn(
+            `[CustomAgentExecutor] Cleanup warning for agent ${agent.name}:`,
+            cleanupError
+          );
+        }
+      }
+    }
   }
 }
 

@@ -9,7 +9,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import type { RawIssue } from './types.js';
-import { getApiKey } from '../config/env.js';
+import { getApiKey, getBaseUrl } from '../config/env.js';
 import { extractJSON } from './utils/json-parser.js';
 import { DEFAULT_REALTIME_DEDUP_MODEL } from './constants.js';
 
@@ -64,8 +64,11 @@ export class RealtimeDeduplicator {
       onDeduplicated: options.onDeduplicated,
     };
 
+    // 使用 baseURL 确保请求通过代理服务器
+    const baseURL = getBaseUrl();
     this.client = new Anthropic({
       apiKey: this.options.apiKey,
+      ...(baseURL && { baseURL }),
     });
   }
 
@@ -165,38 +168,149 @@ export class RealtimeDeduplicator {
 
   /**
    * Use LLM to check if an issue duplicates any of the potential duplicates
+   * Includes retry logic with exponential backoff for transient errors
    */
   private async checkWithLLM(
     newIssue: RawIssue,
     potentialDuplicates: RawIssue[]
   ): Promise<DeduplicationCheckResult> {
     const prompt = this.buildLLMPrompt(newIssue, potentialDuplicates);
+    const maxRetries = 3;
+    const initialDelayMs = 1000;
+    const maxDelayMs = 10000;
+    const backoffMultiplier = 2;
 
-    try {
-      const response = await this.client.messages.create({
-        model: DEFAULT_REALTIME_DEDUP_MODEL,
-        max_tokens: 1024,
-        messages: [
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-      });
+    let currentDelay = initialDelayMs;
+    const startTime = Date.now();
+    const promptSize = prompt.length;
 
-      const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
-      const resultText = response.content[0]?.type === 'text' ? response.content[0].text : '';
+    console.log(
+      `[RealtimeDedup] 开始 LLM 去重检查: model=${DEFAULT_REALTIME_DEDUP_MODEL}, promptSize=${promptSize}, potentialDuplicates=${potentialDuplicates.length}`
+    );
 
-      return this.parseLLMResponse(resultText, potentialDuplicates, tokensUsed);
-    } catch (error) {
-      console.error('[RealtimeDedup] LLM check failed:', error);
-      // On error, accept the issue (false negative is better than false positive)
+    for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+      const attemptStart = Date.now();
+      try {
+        const response = await this.client.messages.create({
+          model: DEFAULT_REALTIME_DEDUP_MODEL,
+          max_tokens: 1024,
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+        });
+
+        const tokensUsed = response.usage.input_tokens + response.usage.output_tokens;
+        const resultText = response.content[0]?.type === 'text' ? response.content[0].text : '';
+        const duration = Date.now() - attemptStart;
+
+        console.log(
+          `[RealtimeDedup] LLM 调用成功: attempt=${attempt}, duration=${duration}ms, tokensUsed=${tokensUsed}`
+        );
+
+        return this.parseLLMResponse(resultText, potentialDuplicates, tokensUsed);
+      } catch (error) {
+        const duration = Date.now() - attemptStart;
+        const isRetryable = this.isRetryableError(error);
+        const hasMoreAttempts = attempt <= maxRetries;
+        const errorDetails = this.extractErrorDetails(error);
+
+        console.error(
+          `[RealtimeDedup] LLM 调用失败: attempt=${attempt}/${maxRetries + 1}, duration=${duration}ms, ` +
+            `status=${errorDetails.status}, type=${errorDetails.type}, retryable=${isRetryable}, ` +
+            `message=${errorDetails.message}`
+        );
+
+        if (isRetryable && hasMoreAttempts) {
+          console.warn(
+            `[RealtimeDedup] ${currentDelay}ms 后重试... (totalElapsed=${Date.now() - startTime}ms)`
+          );
+          await this.sleep(currentDelay);
+          currentDelay = Math.min(currentDelay * backoffMultiplier, maxDelayMs);
+        } else {
+          const totalDuration = Date.now() - startTime;
+          console.error(
+            `[RealtimeDedup] 放弃重试: totalAttempts=${attempt}, totalDuration=${totalDuration}ms, ` +
+              `reason=${isRetryable ? '重试次数耗尽' : '错误不可重试'}`
+          );
+          break;
+        }
+      }
+    }
+
+    // On error, accept the issue (false negative is better than false positive)
+    return {
+      isDuplicate: false,
+      usedLLM: true,
+      tokensUsed: 0,
+    };
+  }
+
+  /**
+   * Extract detailed error information for logging
+   */
+  private extractErrorDetails(error: unknown): {
+    status: number | string;
+    type: string;
+    message: string;
+  } {
+    if (error && typeof error === 'object') {
+      const e = error as Record<string, unknown>;
       return {
-        isDuplicate: false,
-        usedLLM: true,
-        tokensUsed: 0,
+        status: (e.status as number) || (e.statusCode as number) || 'unknown',
+        type: (e.type as string) || (e.name as string) || error.constructor?.name || 'unknown',
+        message: (e.message as string) || String(error),
       };
     }
+    return {
+      status: 'unknown',
+      type: typeof error,
+      message: String(error),
+    };
+  }
+
+  /**
+   * Check if an error is retryable (transient network/proxy errors)
+   */
+  private isRetryableError(error: unknown): boolean {
+    if (error && typeof error === 'object') {
+      const statusCode = (error as { status?: number }).status;
+      if (statusCode && statusCode >= 500 && statusCode < 600) {
+        return true;
+      }
+      if (statusCode === 429) {
+        return true;
+      }
+      const message = this.getErrorMessage(error).toLowerCase();
+      if (
+        message.includes('timeout') ||
+        message.includes('econnreset') ||
+        message.includes('econnrefused') ||
+        message.includes('network') ||
+        message.includes('upstream')
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Extract error message from unknown error type
+   */
+  private getErrorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    return String(error);
+  }
+
+  /**
+   * Sleep for specified milliseconds
+   */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /**

@@ -563,7 +563,10 @@ export class StreamingValidator {
     }
 
     // Start the query
-    const queryStream = query({
+    // 用于资源清理的变量
+    let queryStream: ReturnType<typeof query> | null = null;
+
+    queryStream = query({
       prompt: messageGenerator(),
       options: {
         cwd: this.options.repoPath,
@@ -574,6 +577,27 @@ export class StreamingValidator {
         settingSources: ['project'],
       },
     });
+
+    // 注册信号处理器，确保 SIGTERM/SIGINT 时能正确清理资源
+    // 这解决了 PR Manager 发送 SIGTERM 时 finally 块不执行的问题
+    let isCleaningUp = false;
+    const cleanupAndExit = async (signal: string) => {
+      if (isCleaningUp || !queryStream) return;
+      isCleaningUp = true;
+      console.log(
+        `[StreamingValidator] Received ${signal}, cleaning up session ${session.file}...`
+      );
+      try {
+        await queryStream.return?.(undefined);
+      } catch {
+        // 忽略清理错误
+      }
+      process.exit(0);
+    };
+    const sigtermHandler = () => cleanupAndExit('SIGTERM');
+    const sigintHandler = () => cleanupAndExit('SIGINT');
+    process.on('SIGTERM', sigtermHandler);
+    process.on('SIGINT', sigintHandler);
 
     // Send first message after query starts
     sendMessage(firstPrompt);
@@ -828,6 +852,27 @@ export class StreamingValidator {
               this.totalEnqueued,
               uncertainIssue.id,
               'uncertain'
+            );
+          }
+        }
+      }
+    } finally {
+      // 先移除信号处理器，防止 finally 清理时触发
+      process.off('SIGTERM', sigtermHandler);
+      process.off('SIGINT', sigintHandler);
+
+      // 确保 SDK 资源被正确清理，防止 exit 监听器泄漏
+      if (queryStream) {
+        try {
+          // 调用迭代器的 return() 方法触发 SDK 内部的 cleanup
+          // 这会导致 transport.close() 被调用，从而移除 process.on('exit') 监听器
+          await queryStream.return?.(undefined);
+        } catch (cleanupError) {
+          // 忽略清理过程中的错误
+          if (this.options.verbose) {
+            console.warn(
+              `[StreamingValidator] Cleanup warning for session ${session.file}:`,
+              cleanupError
             );
           }
         }

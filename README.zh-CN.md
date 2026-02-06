@@ -333,6 +333,23 @@ argus review /repo feature main --verbose
 
 ---
 
+### `--local`
+
+**本地分支模式**
+
+审查本地分支，无需推送到远程。启用后：
+
+- 跳过 `git fetch` 操作
+- 直接解析本地分支（如 `feature` 而不是 `origin/feature`）
+- 适用于审查进行中的工作分支
+
+```bash
+# 审查尚未推送的本地分支
+argus review /repo feature main --local
+```
+
+---
+
 ### `--previous-review=<file>`
 
 **修复验证模式**
@@ -384,6 +401,68 @@ argus review /repo feature main --previous-review=./review-result.json
 # 加载上次审查但跳过修复验证
 argus review /repo feature main --previous-review=./review.json --no-verify-fixes
 ```
+
+---
+
+### `--pr-context=<file>`
+
+**PR 业务上下文（Jira 集成）**
+
+提供 PR 的业务上下文（如 Jira Issue 信息），帮助审查 Agent 更好地理解代码变更的目的。
+
+```bash
+argus review /repo feature main --pr-context=./pr-context.json
+```
+
+**JSON 文件结构：**
+
+```json
+{
+  "prTitle": "PROJ-123: 修复登录验证问题",
+  "prDescription": "修复用户登录时特殊字符导致的验证失败问题",
+  "jiraIssues": [
+    {
+      "key": "PROJ-123",
+      "type": "Bug",
+      "summary": "登录时特殊字符导致验证失败",
+      "keyPoints": ["处理密码中的特殊字符", "显示正确的错误提示"],
+      "reviewContext": "检查输入验证和字符编码处理"
+    }
+  ],
+  "parseStatus": "found",
+  "parseMessage": "成功处理 1 个 Jira Issue"
+}
+```
+
+**字段说明：**
+
+| 字段            | 类型           | 必填 | 说明                                         |
+| --------------- | -------------- | ---- | -------------------------------------------- |
+| `prTitle`       | string         | ✅   | PR 标题                                      |
+| `prDescription` | string \| null | ❌   | PR 描述                                      |
+| `jiraIssues`    | array          | ✅   | Jira Issue 数组（可为空）                    |
+| `parseStatus`   | string         | ✅   | 解析状态：`found` / `none` / `partial_error` |
+| `parseMessage`  | string         | ❌   | 调试信息                                     |
+
+**JiraIssueSummary 结构：**
+
+| 字段            | 类型     | 说明                              |
+| --------------- | -------- | --------------------------------- |
+| `key`           | string   | Jira Issue Key（如 `PROJ-123`）   |
+| `type`          | string   | Issue 类型（Bug/Story/Task/Epic） |
+| `summary`       | string   | 简要摘要（100-200 字符）          |
+| `keyPoints`     | string[] | 验收标准或修复要点                |
+| `reviewContext` | string   | 代码审查关注点                    |
+
+**JSON Schema：**
+
+完整的 JSON Schema 定义位于 `schemas/pr-context.schema.json`，可用于 IDE 自动补全和验证。
+
+**使用场景：**
+
+- 与 Jira 系统集成，自动获取 Issue 信息
+- 帮助审查 Agent 理解代码变更的业务背景
+- 验证代码是否满足验收标准
 
 ---
 
@@ -457,6 +536,9 @@ argus review /repo feature main --skip-validation --json-logs
 
 # 基于 commit 的增量 CI 检查
 argus review /repo $NEW_COMMIT $OLD_COMMIT --json-logs
+
+# 带 Jira 上下文的审查
+argus review /repo feature main --pr-context=./pr-context.json --json-logs
 ```
 
 ---
@@ -499,6 +581,9 @@ src/
 └── analyzer/
     ├── local-analyzer.ts # 本地快速分析
     └── diff-analyzer.ts  # LLM 语义分析
+
+schemas/                  # JSON Schema 定义
+└── pr-context.schema.json # PR Context 结构验证
 
 .claude/agents/           # 内置 Agent Prompt 定义
 ├── security-reviewer.md  # 安全审查

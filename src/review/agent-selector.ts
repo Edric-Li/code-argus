@@ -94,10 +94,14 @@ const SOURCE_CODE_EXTENSIONS = new Set([
   'cc',
   'h',
   'hpp',
-  'cs',
+  'cs', // C#
+  'vb', // Visual Basic
+  'vbs', // VBScript
+  'vbhtml', // VB Razor
   'swift',
   'vue',
   'svelte',
+  'mbt', // MoonBit
 ]);
 
 /** Style file extensions */

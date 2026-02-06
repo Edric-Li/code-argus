@@ -4,7 +4,7 @@
  * Builds prompts for each specialized review agent.
  */
 
-import type { AgentType, ProjectStandards } from '../types.js';
+import type { AgentType, ProjectStandards, PRContext } from '../types.js';
 import type { ChangeAnalysis } from '../../analyzer/types.js';
 
 /**
@@ -19,6 +19,8 @@ export interface SpecialistContext {
   standardsText: string;
   /** Project-specific rules (optional) */
   projectRules?: string;
+  /** PR business context (Jira integration, optional) */
+  prContext?: PRContext;
 }
 
 /**
@@ -26,6 +28,29 @@ export interface SpecialistContext {
  */
 export function buildSpecialistPrompt(agentType: AgentType, context: SpecialistContext): string {
   const sections: string[] = [];
+
+  // PR Business Context (Jira integration)
+  if (context.prContext && context.prContext.jiraIssues.length > 0) {
+    sections.push('## PR Business Context\n');
+    sections.push(`**PR Title**: ${context.prContext.prTitle}\n`);
+    if (context.prContext.prDescription) {
+      sections.push(`**PR Description**: ${context.prContext.prDescription}\n`);
+    }
+    sections.push('### Related Jira Issues\n');
+    for (const issue of context.prContext.jiraIssues) {
+      sections.push(`#### ${issue.key} (${issue.type})`);
+      sections.push(`**摘要**: ${issue.summary}\n`);
+      if (issue.keyPoints.length > 0) {
+        sections.push('**关键点**:');
+        for (const point of issue.keyPoints) {
+          sections.push(`- ${point}`);
+        }
+        sections.push('');
+      }
+      sections.push(`**Review 重点**: ${issue.reviewContext}\n`);
+    }
+    sections.push('---\n');
+  }
 
   // Project Standards
   if (context.standardsText) {

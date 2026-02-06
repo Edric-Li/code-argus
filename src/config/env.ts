@@ -99,6 +99,13 @@ export function initializeEnv(): void {
       process.env.ANTHROPIC_BASE_URL = auth.baseUrl;
     }
 
+    // 清除其他认证变量，确保 Claude Agent SDK 使用我们设置的认证
+    // Claude Code CLI 子进程可能优先使用 ANTHROPIC_AUTH_TOKEN (OAuth)
+    // 如果不清除，即使我们设置了 ANTHROPIC_API_KEY，子进程也可能使用系统的 OAuth token
+    if (auth.source === 'argus') {
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+    }
+
     // Handle model separately
     const config = loadConfig();
     if (!process.env.ANTHROPIC_MODEL) {

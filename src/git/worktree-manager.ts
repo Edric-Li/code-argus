@@ -175,9 +175,29 @@ export class WorktreeManager {
 
   /**
    * Update an existing worktree to a new ref
+   *
+   * First cleans any uncommitted changes to ensure checkout can succeed.
+   * This is necessary because worktrees may have leftover changes from previous reviews.
    */
   private updateWorktree(worktreePath: string, checkoutRef: string): void {
     try {
+      // Clean any uncommitted changes first to ensure checkout can succeed
+      // This is necessary because worktrees may have leftover changes from previous reviews
+      try {
+        execSync('git reset --hard HEAD', {
+          cwd: worktreePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        });
+        execSync('git clean -fd', {
+          cwd: worktreePath,
+          encoding: 'utf-8',
+          stdio: 'pipe',
+        });
+      } catch {
+        // Ignore cleanup errors - proceed with checkout attempt
+      }
+
       // Fetch latest and checkout the ref
       execSync(`git checkout --detach ${checkoutRef}`, {
         cwd: worktreePath,
@@ -269,6 +289,9 @@ export class WorktreeManager {
 
   /**
    * Get or create a worktree for a GitRef (branch or commit)
+   *
+   * For branches, if ref.remote is set, uses remote/branch format.
+   * If ref.remote is undefined (local mode), uses branch name directly.
    */
   getOrCreateWorktreeForRef(repoPath: string, ref: GitRef): ManagedWorktreeInfo {
     if (this.autoCleanup) {
@@ -276,10 +299,17 @@ export class WorktreeManager {
     }
 
     // Determine the checkout ref and naming key
-    const checkoutRef =
-      ref.type === 'commit'
-        ? ref.resolvedSha || ref.value
-        : `${ref.remote || 'origin'}/${ref.value}`;
+    let checkoutRef: string;
+    if (ref.type === 'commit') {
+      // Use SHA for commits
+      checkoutRef = ref.resolvedSha || ref.value;
+    } else if (ref.remote) {
+      // Remote mode: use remote/branch
+      checkoutRef = `${ref.remote}/${ref.value}`;
+    } else {
+      // Local mode: use branch name directly
+      checkoutRef = ref.value;
+    }
 
     // For commits, use short SHA for directory name; for branches, use branch name
     const nameKey = ref.type === 'commit' ? (ref.resolvedSha || ref.value).slice(0, 12) : ref.value;

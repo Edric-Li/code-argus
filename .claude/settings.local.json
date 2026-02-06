@@ -1,0 +1,5 @@
+{
+  "permissions": {
+    "allow": ["Bash(wc:*)", "Bash(tree -L 3:*)"]
+  }
+}

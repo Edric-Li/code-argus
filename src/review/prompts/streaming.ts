@@ -4,7 +4,7 @@
  * Prompts for agents that report issues via MCP tool in real-time.
  */
 
-import type { IssueCategory } from '../types.js';
+import type { IssueCategory, PRContext } from '../types.js';
 import { DIFF_ANALYSIS_INSTRUCTIONS } from './base.js';
 
 /**
@@ -201,11 +201,37 @@ export function buildStreamingUserPrompt(
     projectRules?: string;
     /** Deleted files context (only file paths, content removed) - only for logic-reviewer */
     deletedFilesContext?: string;
+    /** PR business context (Jira integration) */
+    prContext?: PRContext;
   }
 ): string {
   const sections: string[] = [];
 
   sections.push(`# Code Review Task: ${agentType}\n`);
+
+  // PR Business Context (Jira integration) - inject early for context
+  if (params.prContext && params.prContext.jiraIssues && params.prContext.jiraIssues.length > 0) {
+    sections.push('## PR Business Context\n');
+    sections.push(`**PR Title**: ${params.prContext.prTitle}\n`);
+    if (params.prContext.prDescription) {
+      sections.push(`**PR Description**: ${params.prContext.prDescription}\n`);
+    }
+    sections.push('### Related Jira Issues\n');
+    sections.push('以下是与此 PR 相关的 Jira issue，请在 review 时参考这些业务上下文：\n');
+    for (const issue of params.prContext.jiraIssues) {
+      sections.push(`#### ${issue.key} (${issue.type})`);
+      sections.push(`**摘要**: ${issue.summary}\n`);
+      if (issue.keyPoints.length > 0) {
+        sections.push('**关键点**:');
+        for (const point of issue.keyPoints) {
+          sections.push(`- ${point}`);
+        }
+        sections.push('');
+      }
+      sections.push(`**Review 重点**: ${issue.reviewContext}\n`);
+    }
+    sections.push('---\n');
+  }
 
   if (params.intentSummary) {
     sections.push('## PR Intent\n');

@@ -113,23 +113,37 @@ export function getDiff(
  * @throws {GitError} If git command fails or repository is invalid
  */
 export function getDiffWithOptions(options: DiffOptions): DiffResult {
-  const { repoPath, sourceBranch, targetBranch, remote = 'origin', skipFetch = false } = options;
+  const {
+    repoPath,
+    sourceBranch,
+    targetBranch,
+    remote = 'origin',
+    skipFetch = false,
+    local = false,
+  } = options;
 
   const absolutePath = validateGitRepository(repoPath);
 
-  // Fetch latest remote refs (unless skipped)
-  if (!skipFetch) {
+  // Fetch latest remote refs (unless skipped or in local mode)
+  if (!skipFetch && !local) {
     fetchRemote(absolutePath, remote);
   }
 
-  // Build remote branch references
-  const remoteSourceBranch = `${remote}/${sourceBranch}`;
-  const remoteTargetBranch = `${remote}/${targetBranch}`;
+  // Build branch references (local or remote)
+  let sourceRef: string;
+  let targetRef: string;
+  if (local) {
+    sourceRef = sourceBranch;
+    targetRef = targetBranch;
+  } else {
+    sourceRef = `${remote}/${sourceBranch}`;
+    targetRef = `${remote}/${targetBranch}`;
+  }
 
-  // Execute three-dot diff: remote/targetBranch...remote/sourceBranch
+  // Execute three-dot diff: targetBranch...sourceBranch
   // This finds the merge base and shows only changes from sourceBranch
   try {
-    const diff = execSync(`git diff ${remoteTargetBranch}...${remoteSourceBranch}`, {
+    const diff = execSync(`git diff ${targetRef}...${sourceRef}`, {
       cwd: absolutePath,
       encoding: 'utf-8',
       maxBuffer: 10 * 1024 * 1024, // 10MB buffer for large diffs
@@ -145,7 +159,7 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
   } catch (error: unknown) {
     const err = error as { stderr?: string; message?: string };
     throw new GitError(
-      `Failed to get diff between ${remoteTargetBranch}...${remoteSourceBranch}`,
+      `Failed to get diff between ${targetRef}...${sourceRef}`,
       'DIFF_FAILED',
       err.stderr || err.message
     );
@@ -158,6 +172,7 @@ export function getDiffWithOptions(options: DiffOptions): DiffResult {
  * This function auto-detects whether the references are branches or commits:
  * - If both are commits: Uses two-dot syntax `git diff target..source`
  * - If either is a branch: Uses three-dot syntax `git diff origin/target...origin/source`
+ *   (or local branches if local=true)
  *
  * @param options - Diff options with reference support
  * @returns Detailed diff result with reference information
@@ -171,6 +186,7 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
     remote = 'origin',
     skipFetch = false,
     smartMergeFilter = true, // Default to smart filtering
+    local = false, // Default to remote mode
   } = options;
 
   const absolutePath = validateGitRepository(repoPath);
@@ -182,7 +198,7 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
 
   // For incremental mode, check if commits exist locally first
   // If not, we need to fetch to get them from remote
-  let needsFetch = !skipFetch;
+  let needsFetch = !skipFetch && !local; // Skip fetch in local mode
   if (isIncremental && !skipFetch) {
     // Try to verify commits exist locally
     try {
@@ -200,18 +216,19 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
       needsFetch = false;
     } catch {
       // At least one commit not found locally, need to fetch
-      needsFetch = true;
+      needsFetch = !local; // Still skip fetch in local mode
     }
   }
 
   // Fetch if needed (for branch mode or when commits don't exist locally)
+  // Skip fetch entirely in local mode
   if (needsFetch) {
     fetchRemote(absolutePath, remote);
   }
 
-  // Resolve references
-  const sourceRef = resolveRef(absolutePath, sourceRefStr, remote);
-  const targetRef = resolveRef(absolutePath, targetRefStr, remote);
+  // Resolve references (pass local flag)
+  const sourceRef = resolveRef(absolutePath, sourceRefStr, remote, local);
+  const targetRef = resolveRef(absolutePath, targetRefStr, remote, local);
   const mode = determineReviewMode(sourceRef, targetRef);
 
   // Build diff based on mode
@@ -246,10 +263,20 @@ export function getDiffByRefs(options: DiffByRefsOptions): DiffResult {
     }
   } else {
     // Branch mode: three-dot diff
-    const sourceArg =
-      sourceRef.type === 'commit' ? sourceRef.resolvedSha : `${remote}/${sourceRef.value}`;
-    const targetArg =
-      targetRef.type === 'commit' ? targetRef.resolvedSha : `${remote}/${targetRef.value}`;
+    let sourceArg: string;
+    let targetArg: string;
+
+    if (local) {
+      // Local mode: use branch names directly (or resolved SHA for commits)
+      sourceArg = sourceRef.type === 'commit' ? sourceRef.resolvedSha! : sourceRef.value;
+      targetArg = targetRef.type === 'commit' ? targetRef.resolvedSha! : targetRef.value;
+    } else {
+      // Remote mode: use origin/branch format
+      sourceArg =
+        sourceRef.type === 'commit' ? sourceRef.resolvedSha! : `${remote}/${sourceRef.value}`;
+      targetArg =
+        targetRef.type === 'commit' ? targetRef.resolvedSha! : `${remote}/${targetRef.value}`;
+    }
     const diffCommand = `git diff ${targetArg}...${sourceArg}`;
 
     try {
@@ -361,20 +388,32 @@ export function createWorktreeForReview(
  *
  * @param repoPath - Path to the git repository
  * @param ref - Git reference (branch or commit)
+ * @param local - Use local branch instead of remote (default: false)
  * @returns Info about the created worktree
  * @throws {GitError} If worktree creation fails
  */
-export function createWorktreeForRef(repoPath: string, ref: GitRef): WorktreeInfo {
+export function createWorktreeForRef(
+  repoPath: string,
+  ref: GitRef,
+  local: boolean = false
+): WorktreeInfo {
   const absolutePath = resolve(repoPath);
 
   // Create temp directory for worktree
   const worktreePath = mkdtempSync(join(tmpdir(), 'code-argus-review-'));
 
   // Determine the ref to checkout
-  const checkoutRef =
-    ref.type === 'commit'
-      ? ref.resolvedSha || ref.value // Use SHA for commits
-      : `${ref.remote || 'origin'}/${ref.value}`; // Use remote/branch for branches
+  let checkoutRef: string;
+  if (ref.type === 'commit') {
+    // Use SHA for commits
+    checkoutRef = ref.resolvedSha || ref.value;
+  } else if (local) {
+    // Local mode: use branch name directly
+    checkoutRef = ref.value;
+  } else {
+    // Remote mode: use remote/branch
+    checkoutRef = `${ref.remote || 'origin'}/${ref.value}`;
+  }
 
   try {
     // Create worktree with detached HEAD

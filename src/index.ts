@@ -4,6 +4,9 @@
  * Main Entry Point
  */
 
+// Increase max listeners to prevent warnings (multiple cleanup handlers may be registered)
+process.setMaxListeners(20);
+
 // Global error handlers - must be set up first to catch any errors during startup
 process.on('uncaughtException', (error, origin) => {
   console.error(`[Argus] Fatal: Uncaught exception from ${origin}:`, error);
@@ -14,6 +17,25 @@ process.on('unhandledRejection', (reason) => {
   console.error('[Argus] Fatal: Unhandled promise rejection:', reason);
   process.exit(1);
 });
+
+// Global AbortController for graceful shutdown - registered once at module level
+const globalAbortController = new AbortController();
+let isGlobalShuttingDown = false;
+
+const handleGlobalShutdown = (signal: string) => {
+  if (isGlobalShuttingDown) return;
+  isGlobalShuttingDown = true;
+  console.log(`\n[Argus] Received ${signal}, gracefully shutting down...`);
+  globalAbortController.abort();
+  // Give time for cleanup, then force exit
+  setTimeout(() => {
+    console.log('[Argus] Cleanup timeout, forcing exit');
+    process.exit(1);
+  }, 10000);
+};
+
+process.on('SIGTERM', () => handleGlobalShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGlobalShutdown('SIGINT'));
 
 import 'dotenv/config';
 import { initializeEnv } from './config/env.js';
@@ -33,7 +55,7 @@ import {
 } from './review/index.js';
 import { detectRefType } from './git/ref.js';
 import { loadConfig, saveConfig, deleteConfigValue, getConfigLocation } from './config/store.js';
-import type { PreviousReviewData } from './review/types.js';
+import type { PreviousReviewData, PRContext } from './review/types.js';
 
 /**
  * Get package version from package.json
@@ -164,12 +186,14 @@ Options (review command):
   --previous-review=<file> Previous review JSON file for fix verification
   --no-verify-fixes        Disable fix verification (when previous-review is set)
   --require-worktree       Require worktree creation, fail if unable to create
+  --local                  Use local branches (skip fetch, no origin/ prefix)
 
 External Diff Options (for integration with PR systems):
   --diff-file=<path>       Read diff from file instead of computing from git
   --diff-stdin             Read diff from stdin instead of computing from git
   --commits=<sha1,sha2>    Only diff specific commits (comma-separated)
   --no-smart-merge-filter  Disable smart merge filtering for incremental mode
+  --pr-context=<file>      PR business context JSON file (see PR Context below)
 
 Config subcommands:
   argus config set <key> <value>     Set a configuration value
@@ -182,6 +206,29 @@ Config keys:
   api-key       Anthropic API key
   base-url      Custom API base URL (for proxies)
   model         Model to use (e.g., claude-sonnet-4-5-20250929)
+
+PR Context (--pr-context):
+  Provides business context for code review, typically from Jira integration.
+  The JSON file must follow this structure:
+
+  {
+    "prTitle": "PROJ-123: Fix login validation",      // PR title (required)
+    "prDescription": "Fixes the login bug...",        // PR description (optional)
+    "jiraIssues": [                                   // Jira issues array (required, can be empty)
+      {
+        "key": "PROJ-123",                            // Jira issue key
+        "type": "Bug",                                // Issue type (Bug/Story/Task/Epic)
+        "summary": "Login fails with special chars",  // Brief summary
+        "keyPoints": [                                // Acceptance criteria
+          "Handle special characters in password",
+          "Show proper error message"
+        ],
+        "reviewContext": "Check input validation"     // Review focus hint
+      }
+    ],
+    "parseStatus": "found",                           // found | none | partial_error
+    "parseMessage": "Successfully processed 1 issue" // Optional status message
+  }
 
 Examples:
   # Branch-based review (initial PR review)
@@ -205,6 +252,9 @@ Examples:
 
   # Only review specific commits (skip merge commits)
   argus review /path/to/repo --commits=abc123,def456,ghi789
+
+  # With PR context (Jira integration)
+  argus review /path/to/repo feature-branch main --pr-context=./pr-context.json
 `);
 }
 
@@ -409,7 +459,9 @@ function parseOptions(args: string[]): {
   previousReview?: string;
   verifyFixes?: boolean;
   requireWorktree?: boolean;
+  prContext?: string;
   externalDiff: ExternalDiffOptions;
+  local?: boolean;
 } {
   const options: {
     language: 'en' | 'zh';
@@ -422,7 +474,9 @@ function parseOptions(args: string[]): {
     previousReview?: string;
     verifyFixes?: boolean;
     requireWorktree?: boolean;
+    prContext?: string;
     externalDiff: ExternalDiffOptions;
+    local?: boolean;
   } = {
     language: 'zh',
     configDirs: [],
@@ -434,7 +488,9 @@ function parseOptions(args: string[]): {
     previousReview: undefined,
     verifyFixes: undefined,
     requireWorktree: undefined,
+    prContext: undefined,
     externalDiff: {},
+    local: undefined,
   };
 
   for (const arg of args) {
@@ -493,6 +549,13 @@ function parseOptions(args: string[]): {
       options.externalDiff.disableSmartMergeFilter = true;
     } else if (arg === '--require-worktree') {
       options.requireWorktree = true;
+    } else if (arg === '--local') {
+      options.local = true;
+    } else if (arg.startsWith('--pr-context=')) {
+      const filePath = arg.split('=')[1];
+      if (filePath) {
+        options.prContext = filePath;
+      }
     }
   }
 
@@ -556,6 +619,22 @@ async function runReviewCommand(
     }
   }
 
+  // Load PR context if specified (Jira integration from bitbucket-pr-manager)
+  let prContext: PRContext | undefined;
+  if (options.prContext) {
+    try {
+      const content = readFileSync(options.prContext, 'utf-8');
+      prContext = JSON.parse(content) as PRContext;
+      if (prContext.jiraIssues && prContext.jiraIssues.length > 0) {
+        console.log(`PR Context: ${prContext.jiraIssues.length} Jira issue(s) loaded`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`Warning: Failed to load PR context: ${message}`);
+      // Don't exit - PR context is optional
+    }
+  }
+
   // In JSON logs mode, skip the banner - all output is JSON events
   if (!options.jsonLogs) {
     const configInfo =
@@ -604,6 +683,7 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       }
     : undefined;
 
+  // Use the global AbortController for graceful shutdown (registered at module level)
   // Use the new reviewByRefs API which auto-detects ref types
   const report = await reviewByRefs({
     repoPath,
@@ -622,6 +702,12 @@ Review Mode:   ${modeLabel}${configInfo ? '\n' + configInfo : ''}${rulesInfo ? '
       verifyFixes: options.verifyFixes,
       // Worktree requirement
       requireWorktree: options.requireWorktree,
+      // PR business context (Jira integration)
+      prContext,
+      // Local branch mode (skip fetch, use local branches)
+      local: options.local,
+      // AbortController for graceful shutdown (use global one registered at module level)
+      abortController: globalAbortController,
     },
   });
 
