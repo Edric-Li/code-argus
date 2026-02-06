@@ -1618,12 +1618,43 @@ export class StreamingReviewOrchestrator {
       let resolvedSourceRef: GitRef | undefined;
       if (sourceRefStr) {
         try {
-          // Fetch remote first to ensure we have the latest branch refs
-          // This is necessary because external diff mode skips getDiffByRefs which normally handles fetch
-          // Skip fetch in local mode
+          // Smart fetch logic for external diff mode (similar to getDiffByRefs)
+          // For commit SHAs, check if they exist locally first before fetching
+          // For branches, always fetch to get latest refs
           if (!this.options.local) {
-            this.progress.progress('获取远程分支...');
-            fetchRemote(repoPath, 'origin');
+            const refType = detectRefType(sourceRefStr);
+            if (refType === 'commit') {
+              // For commits: check existence first, only fetch if not found
+              let commitExists = false;
+              try {
+                execSync(`git cat-file -t ${sourceRefStr}`, {
+                  cwd: repoPath,
+                  encoding: 'utf-8',
+                  stdio: 'pipe',
+                });
+                commitExists = true;
+              } catch {
+                // Commit not found locally
+              }
+
+              if (!commitExists) {
+                this.progress.progress('获取远程 commits...');
+                if (this.options.verbose) {
+                  console.log(
+                    `[StreamingOrchestrator] Commit ${sourceRefStr.slice(0, 7)} not found locally, fetching from remote...`
+                  );
+                }
+                fetchRemote(repoPath, 'origin');
+              } else if (this.options.verbose) {
+                console.log(
+                  `[StreamingOrchestrator] Commit ${sourceRefStr.slice(0, 7)} exists locally, skipping fetch`
+                );
+              }
+            } else {
+              // For branches: always fetch to ensure we have latest refs
+              this.progress.progress('获取远程分支...');
+              fetchRemote(repoPath, 'origin');
+            }
           }
 
           resolvedSourceRef = resolveRef(repoPath, sourceRefStr, 'origin', this.options.local);
